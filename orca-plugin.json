@@ -7,10 +7,31 @@
   "version": "0.1.0",
   "description": "Real-time token usage, generation TPS, and live model cost analytics across Claude Code, Codex, Gemini, and Antigravity.",
   "author": {
-    "name": "Wilson Liu"
+    "name": "Wilson Liu",
+    "url": "https://github.com/wilsonliu123"
   },
+  "repository": "https://github.com/wilsonliu123/orca-token-used",
+  "homepage": "https://github.com/wilsonliu123/orca-token-used",
   "license": "MIT",
   "icon": "assets/icon.png",
+  "cover": {
+    "path": "assets/token-pulse-cover.png",
+    "alt": "Token Pulse live token throughput dashboard"
+  },
+  "screenshots": [
+    {
+      "path": "assets/token-pulse-live.png",
+      "alt": "Token Pulse live model input and output rates",
+      "caption": "Live model input and output throughput",
+      "theme": "dark"
+    },
+    {
+      "path": "assets/token-pulse-detail.png",
+      "alt": "Token Pulse expanded agent telemetry view",
+      "caption": "Expanded agent telemetry with token rates and cost",
+      "theme": "dark"
+    }
+  ],
   "engines": {
     "orca": ">=1.4.248"
   },
