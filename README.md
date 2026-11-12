@@ -21,6 +21,21 @@ The plugin uses Orca's `trusted-worker` profile. Orca will show the requested ac
 - Online pricing refresh from OpenRouter and models.dev, with offline built-in rates.
 - Light and dark Orca themes.
 
+## Views
+
+These compact sidebar captures show the full navigation set and the status-bar summary:
+
+| View | Screenshot |
+| --- | --- |
+| Live overview | ![Live overview](assets/user-live-overview.png) |
+| Sessions | ![Sessions](assets/user-sessions.png) |
+| Today | ![Today](assets/user-today.png) |
+| Week | ![Week](assets/user-week.png) |
+| Month | ![Month](assets/user-month.png) |
+| Status bar | ![Status bar](assets/user-status-bar.png) |
+
+The larger listing screenshots in the manifest are captured directly from Orca at the directory's minimum image size. These compact captures document the narrow sidebar layouts users see in normal use.
+
 ## Data access and privacy
 
 The worker reads local agent transcripts and Orca's local session journal to calculate usage. It reads the local Claude Code, Codex, Gemini, Antigravity, and Orca application data paths needed for those calculations.
@@ -38,6 +53,7 @@ Transcript contents, prompts, responses, and local paths are not sent to those e
 | --- | ---: | --- |
 | Live pricing sync interval | 6 hours | How often online model rates are refreshed. |
 | Live transcript refresh interval | 2 seconds | How often active transcripts are tailed. |
+|                                  |           |                                             |
 
 ## Development
 
