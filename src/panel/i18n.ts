@@ -1,6 +1,6 @@
 import type { AgentKind, AgentRunState, ViewTab } from '../protocol'
 
-export type SupportedLocale = 'zh-TW' | 'zh-CN' | 'en' | 'ja' | 'ko'
+export type SupportedLocale = 'zh-TW' | 'zh-CN' | 'en' | 'ja' | 'ko' | 'cs'
 
 export interface UiMessages {
   appTitle: string
@@ -632,6 +632,116 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
       antigravity: 'Antigravity',
       gemini: 'Gemini CLI'
     }
+  },
+  cs: {
+    appTitle: 'Token Pulse',
+    tabs: {
+      live: 'Živý přehled',
+      sessions: 'Konverzace worktree',
+      day: 'Dnes',
+      week: 'Tento týden',
+      month: 'Tento měsíc',
+      quotas: 'Kvóty a limity'
+    },
+    navShort: {
+      live: 'Živě',
+      sessions: 'Relace',
+      day: 'Dnes',
+      week: 'Týden',
+      month: 'Měsíc',
+      quotas: 'Kvóty'
+    },
+    tabSubtitles: {
+      live: 'Aktivní agenti, modely a živá I/O telemetrie',
+      sessions: 'Relace vybraného projektu a worktree, od nejnovějších',
+      day: 'Spotřeba tokenů a odhad nákladů za 24 hodin',
+      week: 'Trend za posledních 7 dní a rozpad podle agentů',
+      month: 'Trend za posledních 30 dní a rozpad podle agentů',
+      quotas: '5hodinové a týdenní limity plánů Codex, Antigravity a Claude'
+    },
+    scopeAll: 'Celý počítač',
+    scopeWorktree: 'Worktree',
+    refreshTooltip: 'Znovu prohledat přepisy a aktuální ceny',
+    syncPricingTooltip: 'Synchronizovat nejnovější oficiální ceny modelů',
+    liveTpsLabel: 'ŽIVÉ TPS',
+    peakLabel: 'Špička',
+    avgLabel: 'Průměr',
+    activeTokensLabel: 'AKTIVNÍ TOKENY',
+    liveCostLabel: 'NÁKLADY AKTIVNÍCH RELACÍ',
+    todayCostLabel: 'NÁKLADY DNES',
+    periodCostLabel: 'ODHAD NÁKLADŮ',
+    totalTokensLabel: 'TOKENY CELKEM',
+    vsPrevious: 'oproti předchozímu období',
+    inputShort: 'Vstup',
+    cacheShort: 'Cache',
+    outputShort: 'Výstup',
+    costShort: 'Cena',
+    runningAgentsHeader: 'AKTIVNÍ A NEDÁVNÍ AGENTI',
+    subagentsHeader: 'RELACE SUBAGENTŮ',
+    reasoningLabel: 'ÚROVEŇ ODVOZOVÁNÍ',
+    reasoningNotRecorded: '—',
+    clickToInspectHint: 'Kliknutím zobrazíte I/O; pokud je k dispozici terminál, přepne se na něj',
+    outputStreamLabel: 'VÝSTUP MODELU · RYCHLOST ODPOVĚDI',
+    inputStreamLabel: 'VSTUP MODELU · RYCHLOST KONTEXTU',
+    live1sBadge: '1s ŽIVĚ',
+    noLiveAgents: 'Momentálně nejsou aktivní žádné relace agentů',
+    noSessionsInWorktree: 'V tomto worktree projektu zatím nejsou žádné konverzace',
+    noPeriodData: 'V tomto období nebyla zaznamenána žádná spotřeba tokenů',
+    sessionsCountSuffix: 'konverzací',
+    sortedNewestHint: 'Seřazeno od nejnovějších',
+    worktreePrefix: 'Projekt / Worktree',
+    allWorkspacesFallback: 'Všechny pracovní prostory',
+    chartHourHeader: 'DNES PO HODINÁCH (00:00–24:00)',
+    chartWeekHeader: 'POSLEDNÍCH 7 DNÍ',
+    chartMonthHeader: 'POSLEDNÍCH 30 DNÍ',
+    byAgentHeader: 'PODLE AGENTA · TOKENY, NÁKLADY A TPS',
+    pricingOnline: 'Aktuální online ceny',
+    pricingCached: 'Ceny z cache',
+    pricingBuiltin: 'Základní ceny',
+    pricingModelsLoaded: (count) => `Načteno cen modelů: ${count}`,
+    pricingModelsTooltip: 'Počet modelů se známou cenou, nikoli počet aktuálně používaných modelů.',
+    justNow: 'Právě teď',
+    minutesAgo: (m) => `před ${m} min`,
+    hoursAgo: (h) => `před ${h} h`,
+    daysAgo: (d) => `před ${d} d`,
+    activeBadge: 'aktivní',
+    quota5hLabel: '5h okno',
+    quotaWeeklyLabel: 'Týdenní (7d)',
+    quotaUsedLabel: 'využito',
+    quotaResetsIn: (countdown) => `Reset za ${countdown}`,
+    quotaResetSoon: 'Brzy se resetuje',
+    quotaNotApplicable: 'Neuplatňuje se',
+    quotaWeeklyOnlyHint: 'Pouze týdenní plán · bez 5h limitu',
+    quotaResetCredits: (count) => `Resetovacích kreditů: ${count}`,
+    quotaNextExpiry: (when) => `vyprší ${when}`,
+    quotaLocalUsage5h: 'Lokálně 5h',
+    quotaLocalUsage7d: 'Lokálně 7d',
+    quotaTurnsShort: (count) => `${count} kol`,
+    quotaRateLimitsShort: (count) => `${count} × 429`,
+    quotaUnavailableLabel: 'Oficiální kvóta není dostupná',
+    quotaErrorLabel: 'Kontrola kvóty selhala',
+    quotaLoadingLabel: 'Zjišťuji kvóty poskytovatelů…',
+    quotaNoDataLabel: 'Data o kvótách zatím nejsou načtena',
+    quotaSourceLive: 'Živé kvóty',
+    quotaSourceCache: 'Kvóty z cache',
+    quotaSourceLoading: 'Synchronizuji kvóty…',
+    quotaSourceError: 'Chyba synchronizace kvót',
+    quotaRefreshAction: 'Obnovit',
+    quotaOtherAccounts: 'Účty',
+    quotaActiveAccountBadge: 'aktivní',
+    quotaStatusOk: 'OK',
+    states: {
+      working: 'pracuje',
+      waiting: 'čeká',
+      blocked: 'blokováno',
+      done: 'hotovo'
+    },
+    agentNames: {
+      claude: 'Claude Code',
+      codex: 'Codex',
+      antigravity: 'Antigravity',
+      gemini: 'Gemini CLI'
+    }
   }
 }
 
@@ -650,6 +760,7 @@ export function resolveLocale(bcp47: string | null | undefined): SupportedLocale
   }
   if (tag.startsWith('ja')) return 'ja'
   if (tag.startsWith('ko')) return 'ko'
+  if (tag === 'cs' || tag.startsWith('cs-') || tag.startsWith('cs_')) return 'cs'
   return 'en'
 }
 

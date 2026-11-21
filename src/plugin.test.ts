@@ -517,6 +517,9 @@ describe('Aggregator, Left-Sidebar Project/Worktree Focus, Pure-Icon UI & i18n',
     assert.equal(resolveLocale('zh-CN'), 'zh-CN')
     assert.equal(resolveLocale('ja-JP'), 'ja')
     assert.equal(resolveLocale('ko-KR'), 'ko')
+    assert.equal(resolveLocale('cs'), 'cs')
+    assert.equal(resolveLocale('cs-CZ'), 'cs')
+    assert.equal(getMessages('cs-CZ').tabs.day, 'Dnes')
     assert.equal(resolveLocale('en-US'), 'en')
 
     assert.equal(formatProjectWorktreeLabel('PulseBoard', 'main', 'main'), 'PulseBoard / main')
