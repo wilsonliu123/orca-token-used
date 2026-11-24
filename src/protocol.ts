@@ -12,6 +12,12 @@ export type StatsBreakdownMode = 'agent' | 'model' | 'project'
 
 export type AgentRunState = 'working' | 'waiting' | 'blocked' | 'done'
 
+export interface BackgroundTaskInfo {
+  id: string
+  label: string
+  startedAt: number
+}
+
 export interface TokenBreakdown {
   input: number
   output: number
@@ -71,6 +77,8 @@ export interface LiveAgentCard {
   liveOutRate: number
   /** Current 1s input token velocity (`tok/s`) */
   liveInRate: number
+  /** Active background tasks (e.g. async shell commands) currently running for this session. */
+  backgroundTasks?: BackgroundTaskInfo[]
   tokens: TokenBreakdown
 }
 

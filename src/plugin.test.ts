@@ -21,10 +21,18 @@ import {
   escapeHtml,
   formatProjectWorktreeLabel,
   renderDashboardShellHtml,
-  renderIoWaveformSvg
+  renderIoWaveformSvg,
+  renderLiveAgentDetailHtml,
+  updateBgElapsedNodes
 } from './panel/app'
 import { assignSessionMascots, buildActiveRaceSquads } from './panel/race'
-import { formatTokens, formatUsd, getMessages, resolveLocale } from './panel/i18n'
+import {
+  formatElapsedDuration,
+  formatTokens,
+  formatUsd,
+  getMessages,
+  resolveLocale
+} from './panel/i18n'
 import {
   applyAntigravityLines,
   applyClaudeLines,
@@ -4414,4 +4422,615 @@ test('all 6 locales (including cs) have complete i18n keys, localized Live Race 
   const csLiveHtml = renderDashboardShellHtml({ snap, tab: 'live', scope: 'all', locale: 'cs', nowMs: now })
   assert.ok(csLiveHtml.includes('ŽIVÝ ZÁVOD'))
   assert.ok(csLiveHtml.includes('1 přemýšlí'))
+})
+
+describe('Background task tracking, working-state preservation, and compact UI strip', () => {
+  test('Antigravity background task followed by PLANNER_RESPONSE(DONE) + ptyState=working (>45s) stays working and exposes backgroundTasks', () => {
+    const startMs = Date.parse('2026-11-24T06:00:00Z')
+    const now = startMs + 90_000 // 90s elapsed (>45s inactivity threshold)
+    const st = createEmptySessionState('ag-bg-1', 'antigravity', '/tmp/ag-bg-1.jsonl')
+    st.cwd = '/Users/dev/project-alpha'
+    applyAntigravityLines(st, [
+      JSON.stringify({
+        step_index: 0,
+        type: 'USER_INPUT',
+        status: 'DONE',
+        created_at: '2026-11-24T05:59:50Z',
+        content: '<USER_REQUEST>Run full test suite in background</USER_REQUEST>'
+      }),
+      JSON.stringify({
+        step_index: 1,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-24T05:59:55Z',
+        model: 'gemini-4-neon-high',
+        input_tokens: 4000,
+        output_tokens: 180,
+        tool_calls: [{ name: 'run_command', args: { CommandLine: 'pnpm test --watch=false' } }]
+      }),
+      JSON.stringify({
+        step_index: 2,
+        type: 'GENERIC',
+        status: 'RUNNING',
+        created_at: '2026-11-24T06:00:00Z',
+        content:
+          'Created At: 2026-11-24T14:00:00+08:00\n' +
+          'Tool is running as a background task with task id: ag-bg-1/task-2\n' +
+          'Task Description: pnpm test --watch=false\n' +
+          'Task logs are available at: file:///Users/dev/.gemini/antigravity-cli/brain/ag-bg-1/.system_generated/tasks/task-2.log\n'
+      }),
+      JSON.stringify({
+        step_index: 3,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:04Z',
+        model: 'gemini-4-neon-high',
+        input_tokens: 4200,
+        output_tokens: 90,
+        tool_calls: []
+      })
+    ])
+
+    assert.equal(st.lastEventState, 'done')
+    assert.equal(resolveSessionRunState(st, 'working', now, startMs - 5_000), 'working')
+    assert.equal(resolveSessionRunState(st, null, now, 0), 'working')
+    // Stale historical transcript (>30m old) with no live PTY must NOT stay working forever
+    assert.equal(resolveSessionRunState(st, null, startMs + 2 * 3600_000, 0), 'done')
+
+    const pricing = new PricingEngine()
+    const journal = createTestJournalIndex()
+    const runtime = {
+      focusedPath: '/Users/dev/project-alpha',
+      focusedName: 'project-alpha',
+      focusedBranch: 'main',
+      liveAgents: [
+        {
+          terminalId: 'term-bg-1',
+          sessionId: 'ag-bg-1',
+          title: 'Background runner',
+          agent: 'antigravity',
+          state: 'working' as const,
+          stateStartedAt: startMs - 5_000,
+          workspacePath: '/Users/dev/project-alpha'
+        }
+      ]
+    }
+    const snap = buildDashboardSnapshot([st], journal, pricing, runtime, now)
+    assert.equal(snap.live.agents.length, 1)
+    assert.equal(snap.live.agents[0].state, 'working')
+    assert.deepEqual(snap.live.agents[0].backgroundTasks, [
+      { id: 'ag-bg-1/task-2', label: 'pnpm test --watch=false', startedAt: startMs }
+    ])
+
+    const polled = pollSingleLiveAgent('antigravity:ag-bg-1', [st], journal, pricing, runtime, now)
+    assert.ok(polled)
+    assert.equal(polled.state, 'working')
+    assert.deepEqual(polled.backgroundTasks, [
+      { id: 'ag-bg-1/task-2', label: 'pnpm test --watch=false', startedAt: startMs }
+    ])
+  })
+
+  test('Background task clears on SYSTEM_MESSAGE completion/cancel/restart, step status transition, and authoritative ptyState=done', () => {
+    const startMs = Date.parse('2026-11-24T06:00:00Z')
+    const now = startMs + 120_000
+
+    // 1) SYSTEM_MESSAGE finished with result + still-running notification does NOT clear
+    const st1 = createEmptySessionState('ag-bg-done', 'antigravity', '/tmp/ag-bg-done.jsonl')
+    applyAntigravityLines(st1, [
+      JSON.stringify({
+        step_index: 1,
+        type: 'GENERIC',
+        status: 'RUNNING',
+        created_at: '2026-11-24T06:00:00Z',
+        content:
+          'Tool is running as a background task with task id: ag-bg-done/task-1\n' +
+          'Task Description: cargo test --workspace'
+      }),
+      JSON.stringify({
+        step_index: 2,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:03Z',
+        input_tokens: 1000,
+        output_tokens: 50,
+        tool_calls: []
+      }),
+      JSON.stringify({
+        step_index: 3,
+        type: 'SYSTEM_MESSAGE',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:30Z',
+        content:
+          '<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-24T06:00:30Z sender=ag-bg-done/task-1 priority=MESSAGE_PRIORITY_HIGH content=Task id "ag-bg-done/task-1" is still running.\n</SYSTEM_MESSAGE>'
+      })
+    ])
+    assert.equal(resolveSessionRunState(st1, 'working', now, startMs - 1_000), 'working')
+
+    applyAntigravityLines(st1, [
+      JSON.stringify({
+        step_index: 4,
+        type: 'SYSTEM_MESSAGE',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:45Z',
+        content:
+          '<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-24T06:00:45Z sender=ag-bg-done/task-1 priority=MESSAGE_PRIORITY_HIGH content=Task id "ag-bg-done/task-1" finished with result:\nCommand exited with code 0.\n</SYSTEM_MESSAGE>'
+      }),
+      JSON.stringify({
+        step_index: 5,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:50Z',
+        input_tokens: 1200,
+        output_tokens: 80,
+        tool_calls: []
+      })
+    ])
+    assert.equal(resolveSessionRunState(st1, 'working', now, startMs - 1_000), 'done')
+
+    // 2) SYSTEM_MESSAGE canceled
+    const st2 = createEmptySessionState('ag-bg-cancel', 'antigravity', '/tmp/ag-bg-cancel.jsonl')
+    applyAntigravityLines(st2, [
+      JSON.stringify({
+        step_index: 1,
+        type: 'GENERIC',
+        status: 'RUNNING',
+        created_at: '2026-11-24T06:00:00Z',
+        content:
+          'Tool is running as a background task with task id: ag-bg-cancel/task-1\n' +
+          'Task Description: sleep 600'
+      }),
+      JSON.stringify({
+        step_index: 2,
+        type: 'SYSTEM_MESSAGE',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:20Z',
+        content:
+          '<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-24T06:00:20Z sender=ag-bg-cancel/task-1 priority=MESSAGE_PRIORITY_HIGH content=Task id "ag-bg-cancel/task-1" was canceled with result:\n</SYSTEM_MESSAGE>'
+      }),
+      JSON.stringify({
+        step_index: 3,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:22Z',
+        input_tokens: 1000,
+        output_tokens: 40,
+        tool_calls: []
+      })
+    ])
+    assert.equal(resolveSessionRunState(st2, 'working', now, startMs - 1_000), 'done')
+
+    // 3) Same step_index status transition RUNNING -> DONE
+    const st3 = createEmptySessionState('ag-bg-step', 'antigravity', '/tmp/ag-bg-step.jsonl')
+    applyAntigravityLines(st3, [
+      JSON.stringify({
+        step_index: 5,
+        type: 'GENERIC',
+        status: 'RUNNING',
+        created_at: '2026-11-24T06:00:00Z',
+        content:
+          'Tool is running as a background task with task id: ag-bg-step/task-5\n' +
+          'Task Description: npm run build'
+      }),
+      JSON.stringify({
+        step_index: 5,
+        type: 'GENERIC',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:15Z',
+        content: 'Command exited with code 0.'
+      }),
+      JSON.stringify({
+        step_index: 6,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:18Z',
+        input_tokens: 1000,
+        output_tokens: 40,
+        tool_calls: []
+      })
+    ])
+    assert.equal(resolveSessionRunState(st3, 'working', now, startMs - 1_000), 'done')
+
+    // 4) Server restart clears ALL tasks
+    const st4 = createEmptySessionState('ag-bg-restart', 'antigravity', '/tmp/ag-bg-restart.jsonl')
+    applyAntigravityLines(st4, [
+      JSON.stringify({
+        step_index: 1,
+        type: 'GENERIC',
+        status: 'RUNNING',
+        created_at: '2026-11-24T06:00:00Z',
+        content: 'Tool is running as a background task with task id: ag-bg-restart/task-1\nTask Description: cmd1'
+      }),
+      JSON.stringify({
+        step_index: 2,
+        type: 'GENERIC',
+        status: 'RUNNING',
+        created_at: '2026-11-24T06:00:02Z',
+        content: 'Tool is running as a background task with task id: ag-bg-restart/task-2\nTask Description: cmd2'
+      }),
+      JSON.stringify({
+        step_index: 3,
+        type: 'SYSTEM_MESSAGE',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:10Z',
+        content:
+          '<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-24T06:00:10Z sender=system priority=MESSAGE_PRIORITY_LOW content=[Notice] All your subagents and background tasks have been stopped due to server restart.\n</SYSTEM_MESSAGE>'
+      }),
+      JSON.stringify({
+        step_index: 4,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:12Z',
+        input_tokens: 1000,
+        output_tokens: 40,
+        tool_calls: []
+      })
+    ])
+    assert.equal(resolveSessionRunState(st4, 'working', now, startMs - 1_000), 'done')
+
+    // 5) Authoritative Orca ptyState === 'done' with ptyStateStartedAt >= latestTaskStartedAt
+    const st5 = createEmptySessionState('ag-bg-ptydone', 'antigravity', '/tmp/ag-bg-ptydone.jsonl')
+    applyAntigravityLines(st5, [
+      JSON.stringify({
+        step_index: 1,
+        type: 'GENERIC',
+        status: 'RUNNING',
+        created_at: '2026-11-24T06:00:00Z',
+        content: 'Tool is running as a background task with task id: ag-bg-ptydone/task-1\nTask Description: vite build'
+      }),
+      JSON.stringify({
+        step_index: 2,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:04Z',
+        input_tokens: 1000,
+        output_tokens: 40,
+        tool_calls: []
+      })
+    ])
+    assert.equal(resolveSessionRunState(st5, 'done', now, startMs + 10_000), 'done')
+    const snapDone = buildDashboardSnapshot(
+      [st5],
+      createTestJournalIndex(),
+      new PricingEngine(),
+      {
+        focusedPath: null,
+        focusedName: null,
+        focusedBranch: null,
+        liveAgents: [
+          {
+            terminalId: 'term-done',
+            sessionId: 'ag-bg-ptydone',
+            title: 'Done runner',
+            agent: 'antigravity',
+            state: 'done',
+            stateStartedAt: startMs + 10_000,
+            workspacePath: '/Users/dev/project-alpha'
+          }
+        ]
+      },
+      now
+    )
+    assert.equal(snapDone.live.agents[0].state, 'done')
+    assert.equal(snapDone.live.agents[0].backgroundTasks, undefined)
+  })
+
+  test('Multiple concurrent background tasks render compact card strip with +2 badge, elapsed timer, and I/O detail list', () => {
+    const t1 = Date.parse('2026-11-24T06:00:00Z')
+    const t2 = Date.parse('2026-11-24T06:01:10Z')
+    const t3 = Date.parse('2026-11-24T06:02:20Z')
+    const now = t1 + (7 * 60 + 48) * 1000 // 7m 48s after t1
+
+    const st = createEmptySessionState('ag-multi-bg', 'antigravity', '/tmp/ag-multi-bg.jsonl')
+    st.cwd = '/Users/dev/proj'
+    applyAntigravityLines(st, [
+      JSON.stringify({
+        step_index: 1,
+        type: 'GENERIC',
+        status: 'RUNNING',
+        created_at: '2026-11-24T06:00:00Z',
+        content: 'Tool is running as a background task with task id: ag-multi-bg/task-1\nTask Description: pnpm run typecheck'
+      }),
+      JSON.stringify({
+        step_index: 2,
+        type: 'GENERIC',
+        status: 'RUNNING',
+        created_at: '2026-11-24T06:01:10Z',
+        content: 'Tool is running as a background task with task id: ag-multi-bg/task-2\nTask Description: pytest tests/e2e'
+      }),
+      JSON.stringify({
+        step_index: 3,
+        type: 'GENERIC',
+        status: 'RUNNING',
+        created_at: '2026-11-24T06:02:20Z',
+        content: 'Tool is running as a background task with task id: ag-multi-bg/task-3\nTask Description: docker compose build'
+      }),
+      JSON.stringify({
+        step_index: 4,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-24T06:02:25Z',
+        input_tokens: 2000,
+        output_tokens: 100,
+        tool_calls: []
+      })
+    ])
+
+    const snap = buildDashboardSnapshot(
+      [st],
+      createTestJournalIndex(),
+      new PricingEngine(),
+      {
+        focusedPath: '/Users/dev/proj',
+        focusedName: 'proj',
+        focusedBranch: 'main',
+        liveAgents: [
+          {
+            terminalId: 'term-multi',
+            sessionId: 'ag-multi-bg',
+            title: 'Multi BG',
+            agent: 'antigravity',
+            state: 'working',
+            stateStartedAt: t1 - 5_000,
+            workspacePath: '/Users/dev/proj'
+          }
+        ]
+      },
+      now
+    )
+    const card = snap.live.agents[0]
+    assert.equal(card.state, 'working')
+    assert.equal(card.backgroundTasks?.length, 3)
+    assert.deepEqual(
+      card.backgroundTasks?.map((b) => b.startedAt),
+      [t1, t2, t3]
+    )
+
+    const liveHtml = renderDashboardShellHtml({
+      snap,
+      tab: 'live',
+      scope: 'all',
+      locale: 'en',
+      nowMs: now
+    })
+    assert.ok(liveHtml.includes('class="tp-bg-strip"'))
+    assert.ok(liveHtml.includes('&gt;_'))
+    assert.ok(liveHtml.includes('pnpm run typecheck'))
+    assert.ok(liveHtml.includes('class="tp-bg-more">+2</span>'))
+    assert.ok(liveHtml.includes(`data-bg-started-at="${t1}"`))
+    assert.ok(liveHtml.includes('7m 48s'))
+    assert.ok(liveHtml.includes('pytest tests/e2e'))
+    assert.ok(liveHtml.includes('docker compose build'))
+    // Top-right TPS slot keeps normal tok/s (no "bg" badge)
+    assert.ok(liveHtml.includes('0 tok/s<span class="tp-expand-chevron">›</span>'))
+    assert.ok(!liveHtml.includes('3 bg'))
+
+    const detailHtml = renderLiveAgentDetailHtml(card, getMessages('en'), now)
+    assert.ok(detailHtml.includes('BACKGROUND TASKS (3)'))
+    assert.ok(detailHtml.includes('pnpm run typecheck'))
+    assert.ok(detailHtml.includes('pytest tests/e2e'))
+    assert.ok(detailHtml.includes('docker compose build'))
+    assert.equal((detailHtml.match(/data-bg-started-at="/g) ?? []).length, 3)
+  })
+
+  test('XSS payloads in Task Description are escaped in both card strip and detail view, and normal completed turn still resolves to done', () => {
+    const startMs = Date.parse('2026-11-24T06:00:00Z')
+    const now = startMs + 60_000
+    const xssDesc = `<script>alert("xss")</script> & 'danger'`
+
+    const stXss = createEmptySessionState('ag-bg-xss', 'antigravity', '/tmp/ag-bg-xss.jsonl')
+    applyAntigravityLines(stXss, [
+      JSON.stringify({
+        step_index: 1,
+        type: 'GENERIC',
+        status: 'RUNNING',
+        created_at: '2026-11-24T06:00:00Z',
+        content: `Tool is running as a background task with task id: ag-bg-xss/task-1\nTask Description: ${xssDesc}`
+      }),
+      JSON.stringify({
+        step_index: 2,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:04Z',
+        input_tokens: 1500,
+        output_tokens: 80,
+        tool_calls: []
+      })
+    ])
+
+    const snap = buildDashboardSnapshot(
+      [stXss],
+      createTestJournalIndex(),
+      new PricingEngine(),
+      {
+        focusedPath: null,
+        focusedName: null,
+        focusedBranch: null,
+        liveAgents: [
+          {
+            terminalId: 'term-xss',
+            sessionId: 'ag-bg-xss',
+            title: 'XSS test',
+            agent: 'antigravity',
+            state: 'working',
+            stateStartedAt: startMs - 2_000,
+            workspacePath: '/Users/dev/proj'
+          }
+        ]
+      },
+      now
+    )
+
+    const liveHtml = renderDashboardShellHtml({ snap, tab: 'live', scope: 'all', locale: 'en', nowMs: now })
+    const detailHtml = renderLiveAgentDetailHtml(snap.live.agents[0], getMessages('en'), now)
+    assert.ok(!liveHtml.includes('<script>'))
+    assert.ok(!detailHtml.includes('<script>'))
+    assert.ok(liveHtml.includes('&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;'))
+    assert.ok(detailHtml.includes('&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;'))
+
+    // Regression: normal completed Antigravity turn with NO background tasks still resolves to 'done'
+    const stNormal = createEmptySessionState('ag-normal-done', 'antigravity', '/tmp/ag-normal-done.jsonl')
+    applyAntigravityLines(stNormal, [
+      JSON.stringify({
+        step_index: 0,
+        type: 'USER_INPUT',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:00Z',
+        content: '<USER_REQUEST>Say hello</USER_REQUEST>'
+      }),
+      JSON.stringify({
+        step_index: 1,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:05Z',
+        input_tokens: 500,
+        output_tokens: 30,
+        tool_calls: []
+      })
+    ])
+    assert.equal(resolveSessionRunState(stNormal, 'working', startMs + 60_000, startMs - 1_000), 'done')
+    const normalCardHtml = renderLiveAgentDetailHtml(
+      {
+        ...snap.live.agents[0],
+        state: 'done',
+        backgroundTasks: undefined
+      },
+      getMessages('en'),
+      now
+    )
+    assert.ok(!normalCardHtml.includes('tp-io-bg-section'))
+    assert.ok(!normalCardHtml.includes('BACKGROUND TASKS'))
+  })
+
+  test('Caps active background tasks at 32, sanitizes labels, skips Cron daemons, clears Timer & manage_task, and formats/updates elapsed timers', () => {
+    // 1) Cap at 32 entries per session
+    const stCap = createEmptySessionState('ag-cap', 'antigravity', '/tmp/ag-cap.jsonl')
+    const launchLines: string[] = []
+    for (let i = 1; i <= 40; i++) {
+      launchLines.push(
+        JSON.stringify({
+          step_index: i,
+          type: 'GENERIC',
+          status: 'RUNNING',
+          created_at: new Date(Date.parse('2026-11-24T06:00:00Z') + i * 1000).toISOString(),
+          content: `Tool is running as a background task with task id: ag-cap/task-${i}\nTask Description: cmd-${i}`
+        })
+      )
+    }
+    applyAntigravityLines(stCap, launchLines)
+    assert.equal(stCap.activeBackgroundTasks?.size, 32)
+    assert.equal(stCap.activeBackgroundTasks?.has('ag-cap/task-1'), false)
+    assert.equal(stCap.activeBackgroundTasks?.has('ag-cap/task-9'), true)
+    assert.equal(stCap.activeBackgroundTasks?.has('ag-cap/task-40'), true)
+
+    // 2) Scratch path shortening, length cap (<= 160), run_command fallback, Cron ignored, Timer & manage_task cleanup
+    const stLabel = createEmptySessionState('ag-lbl', 'antigravity', '/tmp/ag-lbl.jsonl')
+    const longArg = 'x'.repeat(220)
+    applyAntigravityLines(stLabel, [
+      JSON.stringify({
+        step_index: 1,
+        type: 'PLANNER_RESPONSE',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:00Z',
+        input_tokens: 1000,
+        output_tokens: 50,
+        tool_calls: [{ name: 'run_command', args: { CommandLine: '"pnpm lint"' } }]
+      }),
+      // No Task Description -> falls back to run_command CommandLine
+      JSON.stringify({
+        step_index: 2,
+        type: 'GENERIC',
+        status: 'RUNNING',
+        created_at: '2026-11-24T06:00:02Z',
+        content: 'Tool is running as a background task with task id: ag-lbl/task-2\nTask logs are available at: file:///tmp/task-2.log'
+      }),
+      // Scratch path shortened & bounded to <= 160 chars
+      JSON.stringify({
+        step_index: 3,
+        type: 'GENERIC',
+        status: 'RUNNING',
+        created_at: '2026-11-24T06:00:04Z',
+        content:
+          'Tool is running as a background task with task id: ag-lbl/task-3\n' +
+          `Task Description: python3 /Users/alice/.gemini/antigravity-cli/brain/11111111-2222-3333-4444-555555555555/scratch/verify.py ${longArg}`
+      }),
+      // Recurring Cron daemon ignored
+      JSON.stringify({
+        step_index: 4,
+        type: 'GENERIC',
+        status: 'RUNNING',
+        created_at: '2026-11-24T06:00:05Z',
+        content:
+          'Tool is running as a background task with task id: ag-lbl/task-4\n' +
+          'Task Description: Cron: */3 * * * *, Prompt: [monitor] tick'
+      }),
+      // One-shot Timer tracked, then cleared when its SYSTEM_MESSAGE fires
+      JSON.stringify({
+        step_index: 5,
+        type: 'GENERIC',
+        status: 'RUNNING',
+        created_at: '2026-11-24T06:00:06Z',
+        content:
+          'Tool is running as a background task with task id: ag-lbl/task-5\n' +
+          'Task Description: Timer: 5s, Prompt: Re-check build'
+      })
+    ])
+    assert.equal(stLabel.activeBackgroundTasks?.get('ag-lbl/task-2')?.label, 'pnpm lint')
+    const shortLabel = stLabel.activeBackgroundTasks?.get('ag-lbl/task-3')?.label ?? ''
+    assert.ok(shortLabel.startsWith('python3 scratch/verify.py '))
+    assert.ok(shortLabel.length <= 160)
+    assert.equal(stLabel.activeBackgroundTasks?.has('ag-lbl/task-4'), false)
+    assert.equal(stLabel.activeBackgroundTasks?.has('ag-lbl/task-5'), true)
+
+    applyAntigravityLines(stLabel, [
+      JSON.stringify({
+        step_index: 6,
+        type: 'SYSTEM_MESSAGE',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:11Z',
+        content:
+          '<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-24T06:00:11Z sender=ag-lbl/task-5 priority=MESSAGE_PRIORITY_HIGH content=Re-check build\n</SYSTEM_MESSAGE>'
+      }),
+      JSON.stringify({
+        step_index: 7,
+        type: 'GENERIC',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:12Z',
+        content: 'Task: ag-lbl/task-2\nStatus: DONE\nLog: ok'
+      }),
+      JSON.stringify({
+        step_index: 8,
+        type: 'GENERIC',
+        status: 'DONE',
+        created_at: '2026-11-24T06:00:13Z',
+        content: 'Killed task ag-lbl/task-3'
+      })
+    ])
+    assert.equal(stLabel.activeBackgroundTasks?.size, 0)
+
+    // 3) formatElapsedDuration + lightweight DOM updater + all 6 locales have backgroundTasksHeader
+    assert.equal(formatElapsedDuration(-500), '0s')
+    assert.equal(formatElapsedDuration(NaN), '0s')
+    assert.equal(formatElapsedDuration(0), '0s')
+    assert.equal(formatElapsedDuration(42_900), '42s')
+    assert.equal(formatElapsedDuration((7 * 60 + 48) * 1000), '7m 48s')
+    assert.equal(formatElapsedDuration((3600 + 2 * 60 + 5) * 1000), '1h 2m 5s')
+
+    const baseMs = 1_700_000_000_000
+    const fakeNodes = [
+      { dataset: { bgStartedAt: String(baseMs) }, textContent: '0s', getAttribute: () => String(baseMs) },
+      { dataset: { bgStartedAt: String(baseMs - 65_000) }, textContent: '1m 5s', getAttribute: () => String(baseMs - 65_000) }
+    ]
+    const fakeRoot = {
+      querySelectorAll: () => fakeNodes
+    } as unknown as ParentNode
+    assert.equal(updateBgElapsedNodes(fakeRoot, baseMs + 12_000), 2)
+    assert.equal(fakeNodes[0].textContent, '12s')
+    assert.equal(fakeNodes[1].textContent, '1m 17s')
+    const emptyRoot = { querySelectorAll: () => [] } as unknown as ParentNode
+    assert.equal(updateBgElapsedNodes(emptyRoot, baseMs + 12_000), 0)
+
+    for (const loc of ['zh-TW', 'zh-CN', 'en', 'ja', 'ko', 'cs'] as const) {
+      assert.ok(getMessages(loc).backgroundTasksHeader.length > 0, `locale ${loc} missing backgroundTasksHeader`)
+    }
+  })
 })

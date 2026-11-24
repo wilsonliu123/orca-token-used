@@ -655,6 +655,12 @@ body {
   .tp-race-waiting .tp-race-duckling-svg {
     animation: none;
   }
+
+  .tp-bg-strip::after {
+    animation: none;
+    opacity: 0.45;
+    background-position: 50% 0;
+  }
 }
 
 .tp-card {
@@ -1909,4 +1915,112 @@ html.light .tp-cost-pill {
   white-space: normal;
   overflow-wrap: anywhere;
   line-height: 1.35;
+}
+
+/* Compact Live Background Task Strip & Detail List */
+.tp-bg-strip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 8px 5px;
+  border-radius: 6px;
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(52, 211, 153, 0.22);
+  overflow: hidden;
+}
+
+html.light .tp-bg-strip {
+  background: rgba(4, 120, 87, 0.065);
+  border-color: rgba(4, 120, 87, 0.22);
+}
+
+.tp-bg-strip::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1.5px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(52, 211, 153, 0.16) 24%,
+    var(--tp-status-working) 50%,
+    rgba(52, 211, 153, 0.16) 76%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: tp-bg-sweep 2.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes tp-bg-sweep {
+  0% {
+    background-position: 150% 0;
+  }
+  100% {
+    background-position: -50% 0;
+  }
+}
+
+.tp-bg-prompt {
+  flex-shrink: 0;
+  font-family: var(--tp-font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--tp-status-working);
+  line-height: 1;
+}
+
+.tp-bg-cmd {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--tp-font-mono);
+  font-size: 11px;
+  color: var(--tp-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tp-bg-more {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.16);
+  color: var(--tp-status-working);
+  font-family: var(--tp-font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+html.light .tp-bg-more {
+  background: rgba(4, 120, 87, 0.13);
+}
+
+.tp-bg-elapsed {
+  flex-shrink: 0;
+  font-family: var(--tp-font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--tp-muted);
+  white-space: nowrap;
+}
+
+.tp-io-bg-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--tp-border);
+}
+
+.tp-io-bg-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
 }

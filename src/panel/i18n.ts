@@ -31,6 +31,7 @@ export interface UiMessages {
   raceWaiting: (count: number) => string
   raceSubagentsShort: (count: number) => string
   subagentsHeader: string
+  backgroundTasksHeader: string
   reasoningLabel: string
   reasoningNotRecorded: string
   clickToInspectHint: string
@@ -143,6 +144,7 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     raceWaiting: (count) => `${count} 等待中`,
     raceSubagentsShort: (count) => `${count} 子任務`,
     subagentsHeader: 'Subagent 工作階段',
+    backgroundTasksHeader: '背景任務',
     reasoningLabel: '推理等級',
     reasoningNotRecorded: '—',
     clickToInspectHint: '點擊查看 I/O；有終端時同步聚焦',
@@ -263,6 +265,7 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     raceWaiting: (count) => `${count} 等待中`,
     raceSubagentsShort: (count) => `${count} 子任务`,
     subagentsHeader: 'Subagent 会话',
+    backgroundTasksHeader: '后台任务',
     reasoningLabel: '推理等级',
     reasoningNotRecorded: '—',
     clickToInspectHint: '点击查看 I/O；有终端时同步聚焦',
@@ -383,6 +386,7 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     raceWaiting: (count) => `${count} waiting`,
     raceSubagentsShort: (count) => `${count} sub`,
     subagentsHeader: 'SUBAGENT SESSIONS',
+    backgroundTasksHeader: 'BACKGROUND TASKS',
     reasoningLabel: 'REASONING',
     reasoningNotRecorded: '—',
     clickToInspectHint: 'Click for I/O; focuses its terminal when available',
@@ -503,6 +507,7 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     raceWaiting: (count) => `${count} 待機中`,
     raceSubagentsShort: (count) => `サブ ${count}`,
     subagentsHeader: 'サブエージェント セッション',
+    backgroundTasksHeader: 'バックグラウンドタスク',
     reasoningLabel: '推論レベル',
     reasoningNotRecorded: '—',
     clickToInspectHint: 'クリックで I/O 表示（端末があればフォーカス）',
@@ -623,6 +628,7 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     raceWaiting: (count) => `${count} 대기 중`,
     raceSubagentsShort: (count) => `서브 ${count}`,
     subagentsHeader: '서브에이전트 세션',
+    backgroundTasksHeader: '백그라운드 작업',
     reasoningLabel: '추론 레벨',
     reasoningNotRecorded: '—',
     clickToInspectHint: '클릭하여 I/O 보기 (터미널이 있으면 포커스)',
@@ -743,6 +749,7 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     raceWaiting: (count) => `${count} čeká`,
     raceSubagentsShort: (count) => `${count} sub`,
     subagentsHeader: 'RELACE SUBAGENTŮ',
+    backgroundTasksHeader: 'ÚLOHY NA POZADÍ',
     reasoningLabel: 'ÚROVEŇ ODVOZOVÁNÍ',
     reasoningNotRecorded: '—',
     clickToInspectHint: 'Kliknutím zobrazíte I/O; pokud je k dispozici terminál, přepne se na něj',
@@ -894,6 +901,17 @@ export function formatDurationSpan(diffMs: number): string {
     return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`
   }
   return `${mins}m`
+}
+
+export function formatElapsedDuration(elapsedMs: number): string {
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return '0s'
+  const totalSec = Math.floor(elapsedMs / 1000)
+  if (totalSec < 60) return `${totalSec}s`
+  const hours = Math.floor(totalSec / 3600)
+  const mins = Math.floor((totalSec % 3600) / 60)
+  const secs = totalSec % 60
+  if (hours > 0) return `${hours}h ${mins}m ${secs}s`
+  return `${mins}m ${secs}s`
 }
 
 export function formatCountdown(

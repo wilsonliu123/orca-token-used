@@ -12,6 +12,7 @@ import type {
   AgentKind,
   AgentRunState,
   AgentSummaryRow,
+  BackgroundTaskInfo,
   DashboardSnapshot,
   LiveAgentCard,
   ModelSummaryRow,
@@ -853,7 +854,7 @@ export function buildDashboardSnapshot(
   for (const seed of [
     ...allMainCards.slice(0, 12),
     ...recentChildren.slice(0, 12),
-    ...allCards.filter((card) => card.liveOutRate > 0)
+    ...allCards.filter((card) => card.liveOutRate > 0 || (card.backgroundTasks?.length ?? 0) > 0)
   ]) {
     let card: LiveAgentCard | undefined = seed
     while (card && !visible.has(card)) {
@@ -951,6 +952,37 @@ export function buildDashboardSnapshot(
 export const LIVE_SERIES_SECONDS = 60
 const LIVE_RATE_WINDOW_SECONDS = 8
 const LIVE_RECENT_MS = 15 * 60_000
+const BACKGROUND_TASK_ORPHAN_MAX_AGE_MS = 30 * 60_000
+
+export function getActiveBackgroundTasks(
+  st: SessionTranscriptState,
+  ptyState: AgentRunState | null,
+  now: number,
+  ptyStateStartedAt = 0
+): BackgroundTaskInfo[] {
+  if (!st.activeBackgroundTasks || st.activeBackgroundTasks.size === 0) return []
+  const tasks = Array.from(st.activeBackgroundTasks.values())
+  let latestStartedAt = 0
+  for (const t of tasks) {
+    if (t.startedAt > latestStartedAt) latestStartedAt = t.startedAt
+  }
+  if (ptyState === 'done' && ptyStateStartedAt > 0 && ptyStateStartedAt >= latestStartedAt) {
+    return []
+  }
+  const lastTouchMs = Math.max(st.updatedAtMs || 0, st.lastMtimeMs || 0)
+  const filtered =
+    ptyState === null
+      ? tasks.filter(
+          (t) =>
+            now - t.startedAt <= BACKGROUND_TASK_ORPHAN_MAX_AGE_MS &&
+            now - lastTouchMs <= BACKGROUND_TASK_ORPHAN_MAX_AGE_MS
+        )
+      : tasks
+  if (filtered.length === 0) return []
+  return filtered
+    .map((t) => ({ id: t.id, label: t.label, startedAt: t.startedAt }))
+    .sort((a, b) => a.startedAt - b.startedAt || a.id.localeCompare(b.id))
+}
 
 export function resolveSessionRunState(
   st: SessionTranscriptState,
@@ -961,10 +993,14 @@ export function resolveSessionRunState(
   if (ptyState === 'blocked') return 'blocked'
   const lastTouchMs = Math.max(st.updatedAtMs || 0, st.lastMtimeMs || 0)
   if ((ptyState === 'done' || ptyState === 'waiting') && ptyStateStartedAt >= st.updatedAtMs) return ptyState
+  const activeBgTasks = getActiveBackgroundTasks(st, ptyState, now, ptyStateStartedAt)
+  const hasActiveBgTasks = activeBgTasks.length > 0
 
   if (ptyState === 'working') {
     // If transcript explicitly finished (`done`) after `ptyStateStartedAt` (or has had no writes for >45s), it is already done
+    // unless active background tasks are still running in this session.
     if (
+      !hasActiveBgTasks &&
       st.lastEventState === 'done' &&
       ((ptyStateStartedAt > 0 && st.updatedAtMs >= ptyStateStartedAt + 500) ||
         (now - lastTouchMs > 45_000 &&
@@ -980,6 +1016,9 @@ export function resolveSessionRunState(
     now - lastTouchMs <= 30 * 60_000
   ) {
     return 'waiting'
+  }
+  if (hasActiveBgTasks && ptyState !== 'done') {
+    return 'working'
   }
   if (st.lastEventState === 'done') {
     return 'done'
@@ -1296,6 +1335,12 @@ function buildLiveAgentCards(params: {
         now,
         la.stateStartedAt || 0
       )
+      const activeBgTasks = getActiveBackgroundTasks(
+        matchedSession.state,
+        la.state,
+        now,
+        la.stateStartedAt || 0
+      )
       const isWorking = resolvedState === 'working'
       if (
         hasActiveChildSubagent(
@@ -1312,6 +1357,8 @@ function buildLiveAgentCards(params: {
         isWorking,
         now
       )
+      const backgroundTasks =
+        resolvedState !== 'done' && activeBgTasks.length > 0 ? activeBgTasks : undefined
       cards.push({
         id: la.terminalId || sKey,
         sessionKey: sKey,
@@ -1337,6 +1384,7 @@ function buildLiveAgentCards(params: {
         seriesEndSec: io.seriesEndSec,
         liveOutRate: io.liveOutRate,
         liveInRate: io.liveInRate,
+        ...(backgroundTasks ? { backgroundTasks } : {}),
         tokens: matchedSession.tokens
       })
     } else if (la.state !== 'done' && (publicKey || la.terminalId)) {
@@ -1389,7 +1437,9 @@ function buildLiveAgentCards(params: {
       allSessions,
       now
     )
-    const isRecentlyActive = hasActiveChild || s.state.updatedAtMs >= recentLiveCutoffMs
+    const activeBgTasks = getActiveBackgroundTasks(s.state, null, now)
+    const isRecentlyActive =
+      hasActiveChild || activeBgTasks.length > 0 || s.state.updatedAtMs >= recentLiveCutoffMs
     if (!isRecentlyActive) continue
 
     claimedSessionKeys.add(sKey)
@@ -1399,6 +1449,7 @@ function buildLiveAgentCards(params: {
       state = 'waiting'
     }
     const io = compute60sIoSeries(s.state.turnsByKey.values(), isWorking, now)
+    const backgroundTasks = state !== 'done' && activeBgTasks.length > 0 ? activeBgTasks : undefined
     cards.push({
       id: sKey,
       sessionKey: sKey,
@@ -1421,6 +1472,7 @@ function buildLiveAgentCards(params: {
       seriesEndSec: io.seriesEndSec,
       liveOutRate: io.liveOutRate,
       liveInRate: io.liveInRate,
+      ...(backgroundTasks ? { backgroundTasks } : {}),
       tokens: s.tokens
     })
   }
@@ -1491,6 +1543,7 @@ export function pollSingleLiveAgent(
   if (!fallback) return null
 
   let state = resolveSessionRunState(fallback.state, null, now)
+  const activeBgTasks = getActiveBackgroundTasks(fallback.state, null, now)
   const isWorking = state === 'working'
   if (
     hasActiveChildSubagent(
@@ -1507,6 +1560,7 @@ export function pollSingleLiveAgent(
     isWorking,
     now
   )
+  const backgroundTasks = state !== 'done' && activeBgTasks.length > 0 ? activeBgTasks : undefined
   const sKey = `${fallback.state.agent}:${fallback.state.sessionId}`
   return {
     id: sKey,
@@ -1530,6 +1584,7 @@ export function pollSingleLiveAgent(
     seriesEndSec: io.seriesEndSec,
     liveOutRate: io.liveOutRate,
     liveInRate: io.liveInRate,
+    ...(backgroundTasks ? { backgroundTasks } : {}),
     tokens: fallback.tokens
   }
 }

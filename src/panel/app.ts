@@ -3,6 +3,7 @@ import { buildActiveRaceSquads, renderMascotSvg, renderSessionRaceTrackHtml } fr
 import type {
   AgentKind,
   AgentRunState,
+  BackgroundTaskInfo,
   DashboardSnapshot,
   LiveAgentCard,
   LocalQuotaUsageWindow,
@@ -23,6 +24,7 @@ import type {
 import {
   formatCountdown,
   formatDurationSpan,
+  formatElapsedDuration,
   formatRateTokPerSec,
   formatRelativeTime,
   formatScaleTokPerSec,
@@ -408,7 +410,81 @@ export function computeCacheHitPercent(tokens: TokenBreakdown): number | null {
   return Math.max(0, Math.min(100, Math.round((tokens.cacheRead / denom) * 100)))
 }
 
-export function renderLiveAgentDetailHtml(agent: LiveAgentCard, msg: UiMessages): string {
+function bgTasksSignature(tasks: readonly BackgroundTaskInfo[] | undefined): string {
+  if (!tasks || tasks.length === 0) return ''
+  return JSON.stringify(tasks.map((t) => [t.id, t.startedAt, t.label]))
+}
+
+function renderBgTaskStripHtml(
+  tasks: readonly BackgroundTaskInfo[] | undefined,
+  nowMs: number
+): string {
+  if (!tasks || tasks.length === 0) return ''
+  const primary = tasks[0]
+  const extraCount = tasks.length - 1
+  const tooltip = tasks
+    .map((t) => `>_ ${t.label} (${formatElapsedDuration(nowMs - t.startedAt)})`)
+    .join('\n')
+  const elapsedText = formatElapsedDuration(nowMs - primary.startedAt)
+  return `
+    <div class="tp-bg-strip" title="${escapeHtml(tooltip)}">
+      <span class="tp-bg-prompt" aria-hidden="true">&gt;_</span>
+      <span class="tp-bg-cmd">${escapeHtml(primary.label)}</span>
+      ${extraCount > 0 ? `<span class="tp-bg-more">+${extraCount}</span>` : ''}
+      <span class="tp-bg-elapsed" data-bg-started-at="${primary.startedAt}">${escapeHtml(elapsedText)}</span>
+    </div>
+  `
+}
+
+function renderDetailBgTasksSectionHtml(
+  tasks: readonly BackgroundTaskInfo[] | undefined,
+  msg: UiMessages,
+  nowMs: number
+): string {
+  if (!tasks || tasks.length === 0) return ''
+  const rows = tasks
+    .map((t) => {
+      const elapsedText = formatElapsedDuration(nowMs - t.startedAt)
+      return `
+        <div class="tp-bg-strip tp-io-bg-item" title="${escapeHtml(t.label)}">
+          <span class="tp-bg-prompt" aria-hidden="true">&gt;_</span>
+          <span class="tp-bg-cmd">${escapeHtml(t.label)}</span>
+          <span class="tp-bg-elapsed" data-bg-started-at="${t.startedAt}">${escapeHtml(elapsedText)}</span>
+        </div>
+      `
+    })
+    .join('')
+  return `
+    <section class="tp-io-bg-section" data-io-bg-tasks data-bg-sig="${escapeHtml(bgTasksSignature(tasks))}" aria-label="${escapeHtml(msg.backgroundTasksHeader)}">
+      <div class="tp-io-panel-hdr">
+        <span class="tp-io-panel-title">${escapeHtml(msg.backgroundTasksHeader)} (${tasks.length})</span>
+      </div>
+      <div class="tp-io-bg-list">${rows}</div>
+    </section>
+  `
+}
+
+export function updateBgElapsedNodes(root: ParentNode, nowMs = Date.now()): number {
+  const nodes = root.querySelectorAll<HTMLElement>('[data-bg-started-at]')
+  let updated = 0
+  for (const node of nodes) {
+    const raw = node.dataset?.bgStartedAt ?? node.getAttribute('data-bg-started-at')
+    const startedAt = Number(raw)
+    if (!Number.isFinite(startedAt) || startedAt <= 0) continue
+    const nextText = formatElapsedDuration(nowMs - startedAt)
+    if (node.textContent !== nextText) {
+      node.textContent = nextText
+    }
+    updated++
+  }
+  return updated
+}
+
+export function renderLiveAgentDetailHtml(
+  agent: LiveAgentCard,
+  msg: UiMessages,
+  nowMs = Date.now()
+): string {
   const providerModel = `${agent.providerLabel} · ${agent.modelLabel}`
   const projWt = formatProjectWorktreeLabel(agent.projectName, agent.workspaceName)
   const outTotal = Math.max(0, agent.tokens.output + agent.tokens.reasoning)
@@ -456,6 +532,8 @@ export function renderLiveAgentDetailHtml(agent: LiveAgentCard, msg: UiMessages)
           <span>${escapeHtml(msg.costShort)} <span class="tp-cost-pill" data-io-text="cost">${formatUsd(agent.tokens.costUsd)}</span></span>
         </div>
       </div>
+
+      ${renderDetailBgTasksSectionHtml(agent.backgroundTasks, msg, nowMs)}
 
       <section class="tp-io-panel" aria-label="${escapeHtml(msg.outputStreamLabel)}">
         <div class="tp-io-panel-hdr">
@@ -566,7 +644,8 @@ export function renderStackedChartSvg(buckets: TimeBucket[], msg: UiMessages): s
 function renderLiveView(
   snap: DashboardSnapshot,
   msg: UiMessages,
-  collapsedGroups: CollapsedGroups = {}
+  collapsedGroups: CollapsedGroups = {},
+  nowMs = Date.now()
 ): string {
   const { tokens, tps, agents, subagents = [] } = snap.live
   const todayCost = snap.periods.all.day.tokens.costUsd
@@ -636,6 +715,7 @@ function renderLiveView(
           <div class="tp-session-title tp-title-${a.state}" title="${escapeHtml(a.title)}">${escapeHtml(a.title)}</div>
           <span class="tp-session-avg">${escapeHtml(msg.avgLabel)} ${formatRateTokPerSec(a.tps.avgTps)}</span>
         </div>
+        ${renderBgTaskStripHtml(a.backgroundTasks, nowMs)}
         <div class="tp-row-between" style="font-size:11px;color:var(--tp-muted)">
           <span class="tp-project-tag" title="${escapeHtml(a.workspacePath || projWt)}">${escapeHtml(projWt)}</span>
           <span>
@@ -1500,9 +1580,9 @@ export function renderDashboardShellHtml(params: {
   if (snap) {
     if (tab === 'live') {
       if (resolvedExpandedAgent) {
-        mainBodyHtml = `<div id="tp-live-detail-root">${renderLiveAgentDetailHtml(resolvedExpandedAgent, msg)}</div>`
+        mainBodyHtml = `<div id="tp-live-detail-root">${renderLiveAgentDetailHtml(resolvedExpandedAgent, msg, nowMs)}</div>`
       } else {
-        mainBodyHtml = renderLiveView(snap, msg, collapsedGroups)
+        mainBodyHtml = renderLiveView(snap, msg, collapsedGroups, nowMs)
       }
     } else if (tab === 'sessions') {
       mainBodyHtml = renderSessionsView(snap, msg, nowMs, collapsedGroups)
@@ -1595,6 +1675,7 @@ function initBrowserPanel(): void {
   let liveDetailAgent: LiveAgentCard | null = null
   let liveDetailGeneratedAt = 0
   let livePollTimer: ReturnType<typeof setInterval> | null = null
+  let bgElapsedTimer: ReturnType<typeof setInterval> | null = null
   let localeSyncTimer: ReturnType<typeof setInterval> | null = null
   let localeSyncInFlight = false
   let livePollInFlight = false
@@ -1658,6 +1739,30 @@ function initBrowserPanel(): void {
     streamOutDisplayScale = 20
     streamInDisplayScale = 20
     liveDetailGeneratedAt = 0
+  }
+
+  function stopBgElapsedTimer(): void {
+    if (bgElapsedTimer !== null) {
+      clearInterval(bgElapsedTimer)
+      bgElapsedTimer = null
+    }
+  }
+
+  function tickBgElapsedTimers(): void {
+    if (document.hidden || updateBgElapsedNodes(appRoot!, Date.now()) === 0) {
+      stopBgElapsedTimer()
+    }
+  }
+
+  function syncBgElapsedTimer(): void {
+    const hasNodes = !document.hidden && appRoot!.querySelector('[data-bg-started-at]') !== null
+    if (!hasNodes) {
+      stopBgElapsedTimer()
+      return
+    }
+    if (bgElapsedTimer === null) {
+      bgElapsedTimer = setInterval(tickBgElapsedTimers, 1000)
+    }
   }
 
   function stopStreamRaf(): void {
@@ -1952,6 +2057,21 @@ function initBrowserPanel(): void {
       }
     }
 
+    const nextBgSig = bgTasksSignature(agent.backgroundTasks)
+    const existingBgSection = monitorEl.querySelector<HTMLElement>('[data-io-bg-tasks]')
+    const prevBgSig = existingBgSection?.dataset.bgSig ?? ''
+    if (nextBgSig !== prevBgSig) {
+      if (existingBgSection) existingBgSection.remove()
+      if (nextBgSig) {
+        const metaStack = monitorEl.querySelector<HTMLElement>('.tp-io-meta-stack')
+        const html = renderDetailBgTasksSectionHtml(agent.backgroundTasks, msg, Date.now())
+        if (metaStack && html) {
+          metaStack.insertAdjacentHTML('afterend', html)
+        }
+      }
+    }
+    syncBgElapsedTimer()
+
     return true
   }
 
@@ -1994,6 +2114,7 @@ function initBrowserPanel(): void {
       renderStreamWaveFrame(0)
       syncLiveStreamEngines()
     }
+    syncBgElapsedTimer()
   }
 
   async function pollSelectedAgentOnce(): Promise<void> {
@@ -2273,8 +2394,12 @@ function initBrowserPanel(): void {
 
   document.addEventListener('visibilitychange', () => {
     syncLiveStreamEngines()
-    if (!document.hidden && currentTab === 'live' && selectedLiveAgentKey) {
-      void pollSelectedAgentOnce()
+    syncBgElapsedTimer()
+    if (!document.hidden) {
+      tickBgElapsedTimers()
+      if (currentTab === 'live' && selectedLiveAgentKey) {
+        void pollSelectedAgentOnce()
+      }
     }
   })
 
@@ -2283,6 +2408,7 @@ function initBrowserPanel(): void {
       clearInterval(livePollTimer)
       livePollTimer = null
     }
+    stopBgElapsedTimer()
     if (localeSyncTimer !== null) {
       clearInterval(localeSyncTimer)
       localeSyncTimer = null

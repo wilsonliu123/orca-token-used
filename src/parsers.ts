@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { normalizeReasoningLevel } from './journal'
-import type { AgentKind } from './protocol'
+import type { AgentKind, BackgroundTaskInfo } from './protocol'
 
 export interface ParsedTurnUsage {
   turnKey: string
@@ -66,6 +66,12 @@ export interface SessionTranscriptState {
   lastCodexCumulativeTotal: number | null
   agStepCreatedMs: Map<number, number>
   maxAgStepIndex: number
+  /** Active background tasks (keyed by task ID, bounded to 32) parsed from transcript events */
+  activeBackgroundTasks?: Map<string, BackgroundTaskInfo>
+  /** Antigravity step_index -> background task ID mapping for step-level status transitions */
+  agBgTaskIdByStep?: Map<number, string>
+  /** Recent Antigravity run_command labels used as fallback when Task Description is absent */
+  agRecentRunCommandLabels?: string[]
   claudePendingSubagentCalls?: Map<string, SpawnedSubagentMeta>
   claudePendingSubagentByAssistantUuid?: Map<string, SpawnedSubagentMeta[]>
 }
@@ -846,6 +852,95 @@ export function applyCodexLines(state: SessionTranscriptState, lines: string[]):
   }
 }
 
+const MAX_ACTIVE_BACKGROUND_TASKS = 32
+const MAX_BACKGROUND_TASK_LABEL_LEN = 160
+
+function formatBackgroundTaskLabel(
+  raw: string | null | undefined,
+  fallbackTaskId: string
+): string {
+  let label = typeof raw === 'string' ? raw : ''
+  label = label.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (
+    (label.startsWith('"') && label.endsWith('"')) ||
+    (label.startsWith("'") && label.endsWith("'"))
+  ) {
+    label = label.slice(1, -1).trim()
+  }
+  label = label.replace(
+    /(?:\/Users\/[^/\s]+|\/home\/[^/\s]+)\/\.gemini\/antigravity-cli\/brain\/[^/\s]+\/scratch\//g,
+    'scratch/'
+  )
+  if (!label) {
+    const slashIdx = fallbackTaskId.lastIndexOf('/')
+    label = slashIdx >= 0 ? fallbackTaskId.slice(slashIdx + 1) : fallbackTaskId
+  }
+  if (label.length > MAX_BACKGROUND_TASK_LABEL_LEN) {
+    return `${label.slice(0, MAX_BACKGROUND_TASK_LABEL_LEN - 1)}…`
+  }
+  return label
+}
+
+function extractAntigravityTaskDescription(content: string): string | null {
+  const lines = content.split(/\r?\n/)
+  const startIdx = lines.findIndex((l) => /^Task Description:\s*/i.test(l))
+  if (startIdx === -1) return null
+  const parts: string[] = [lines[startIdx].replace(/^Task Description:\s*/i, '').trim()]
+  for (let i = startIdx + 1; i < Math.min(lines.length, startIdx + 4); i++) {
+    const next = lines[i].trim()
+    if (
+      !next ||
+      /^Task logs are available at:/i.test(next) ||
+      /^Log output:/i.test(next) ||
+      /^YOU MUST TAKE/i.test(next)
+    ) {
+      break
+    }
+    parts.push(next)
+  }
+  const joined = parts.filter(Boolean).join(' ')
+  return joined || null
+}
+
+function isRecurringCronTaskDescription(desc: string | null): boolean {
+  return Boolean(desc && /^Cron:/i.test(desc.trim()))
+}
+
+function deleteAntigravityBackgroundTask(state: SessionTranscriptState, taskId: string): void {
+  const trimmed = taskId.trim()
+  if (!trimmed) return
+  state.activeBackgroundTasks?.delete(trimmed)
+  if (state.agBgTaskIdByStep) {
+    for (const [stepIdx, mappedId] of state.agBgTaskIdByStep.entries()) {
+      if (mappedId === trimmed) state.agBgTaskIdByStep.delete(stepIdx)
+    }
+  }
+}
+
+function recordAntigravityRunCommandLabels(
+  state: SessionTranscriptState,
+  toolCalls: unknown[]
+): void {
+  for (const tc of toolCalls) {
+    if (!tc || typeof tc !== 'object') continue
+    const call = tc as { name?: unknown; args?: unknown }
+    const name = String(call.name || '')
+    if (name !== 'run_command' && !name.endsWith(':run_command')) continue
+    const args =
+      call.args && typeof call.args === 'object'
+        ? (call.args as Record<string, unknown>)
+        : null
+    const rawLabel =
+      cleanNonEmptyString(args?.CommandLine) ?? cleanNonEmptyString(args?.toolSummary)
+    if (!rawLabel) continue
+    state.agRecentRunCommandLabels ??= []
+    if (state.agRecentRunCommandLabels.length >= 8) {
+      state.agRecentRunCommandLabels.shift()
+    }
+    state.agRecentRunCommandLabels.push(rawLabel)
+  }
+}
+
 function minDurationForAntigravity(startMs: number | null, endMs: number): number {
   if (!startMs) return 0.2
   // Antigravity ISO timestamps are quantized to whole seconds; require >= 2s span when quantized
@@ -878,6 +973,10 @@ export function applyAntigravityLines(state: SessionTranscriptState, lines: stri
     const stepIndex = hasNumericIdx ? (obj.step_index as number) : state.turnsByKey.size
     const stepType = String(obj.type || '')
     const stepStatus = String(obj.status || '')
+
+    if (stepType === 'PLANNER_RESPONSE' && Array.isArray(obj.tool_calls)) {
+      recordAntigravityRunCommandLabels(state, obj.tool_calls)
+    }
 
     if (stepIndex >= state.maxAgStepIndex) {
       state.maxAgStepIndex = stepIndex
@@ -936,6 +1035,90 @@ export function applyAntigravityLines(state: SessionTranscriptState, lines: stri
             prevTurn.timestampMs = tsMs
           }
           break
+        }
+      }
+    }
+
+    if (hasNumericIdx && state.agBgTaskIdByStep?.has(stepIndex) && stepStatus !== 'RUNNING') {
+      const mappedId = state.agBgTaskIdByStep.get(stepIndex)
+      if (mappedId) deleteAntigravityBackgroundTask(state, mappedId)
+    }
+
+    if (stepType === 'GENERIC') {
+      const content = typeof obj.content === 'string' ? obj.content : ''
+      if (stepStatus === 'RUNNING') {
+        const launchMatch = content.match(
+          /Tool is running as a background task with task id:\s*([^\s\r\n]+)/i
+        )
+        if (launchMatch?.[1]) {
+          const taskId = launchMatch[1].trim()
+          const rawDesc = extractAntigravityTaskDescription(content)
+          if (!isRecurringCronTaskDescription(rawDesc)) {
+            const fallbackLabel = !rawDesc ? state.agRecentRunCommandLabels?.shift() ?? null : null
+            const label = formatBackgroundTaskLabel(rawDesc ?? fallbackLabel, taskId)
+            const startedAt = tsMs ?? (state.updatedAtMs || Date.now())
+            state.activeBackgroundTasks ??= new Map()
+            setBoundedMapEntry(
+              state.activeBackgroundTasks,
+              taskId,
+              { id: taskId, label, startedAt },
+              MAX_ACTIVE_BACKGROUND_TASKS
+            )
+            if (hasNumericIdx) {
+              state.agBgTaskIdByStep ??= new Map()
+              setBoundedMapEntry(state.agBgTaskIdByStep, stepIndex, taskId, 64)
+            }
+          }
+        }
+      } else if (state.activeBackgroundTasks?.size && content) {
+        for (const m of content.matchAll(
+          /Task:\s*([^\s\r\n]+)[\s\S]{0,120}?Status:\s*(DONE|COMPLETED|ERROR|FAILED|CANCELED|CANCELLED|KILLED|STOPPED)\b/gi
+        )) {
+          deleteAntigravityBackgroundTask(state, m[1])
+        }
+        for (const m of content.matchAll(
+          /(?:Killed|Canceled|Cancelled|Stopped|Terminated)\s+task(?:\s+id)?[:\s"]+([^\s"',;.\r\n]+)/gi
+        )) {
+          deleteAntigravityBackgroundTask(state, m[1])
+        }
+      }
+    } else if (stepType === 'SYSTEM_MESSAGE') {
+      const content = typeof obj.content === 'string' ? obj.content : ''
+      if (
+        /All\s+your\s+(?:subagents\s+and\s+)?background\s+tasks\s+have\s+been\s+(?:stopped|cancel(?:ed|led)|terminated)/i.test(
+          content
+        )
+      ) {
+        state.activeBackgroundTasks?.clear()
+        state.agBgTaskIdByStep?.clear()
+      } else if (state.activeBackgroundTasks?.size && content) {
+        for (const m of content.matchAll(
+          /Task id\s+"([^"]+)"\s+(?:finished|was cancel(?:ed|led)|cancel(?:ed|led)|failed|stopped|killed|terminated|completed|exited)/gi
+        )) {
+          deleteAntigravityBackgroundTask(state, m[1])
+        }
+        for (const m of content.matchAll(
+          /task id:\s*([^\s"',;\r\n]+)[^\r\n]{0,120}\b(?:finished|cancel(?:ed|led)|failed|stopped|killed|terminated|completed|exited)\b/gi
+        )) {
+          if (!/\bstill running\b/i.test(m[0])) {
+            deleteAntigravityBackgroundTask(state, m[1])
+          }
+        }
+        const senderMatch = content.match(/\bsender=([^\s\r\n]+)/)
+        const senderId = senderMatch?.[1]?.trim()
+        if (senderId && state.activeBackgroundTasks.has(senderId)) {
+          const tracked = state.activeBackgroundTasks.get(senderId)!
+          const bodyIdx = content.indexOf('content=')
+          const body = bodyIdx !== -1 ? content.slice(bodyIdx + 'content='.length) : content
+          const isStillRunning = /\bstill running\b/i.test(body)
+          const isTerminalBody =
+            /\b(?:finished|completed|cancel(?:ed|led)|failed|stopped|killed|terminated|exited)\b/i.test(
+              body
+            )
+          const isOneShotTimerFired = /^Timer:/i.test(tracked.label) && !isStillRunning
+          if ((!isStillRunning && isTerminalBody) || isOneShotTimerFired) {
+            deleteAntigravityBackgroundTask(state, senderId)
+          }
         }
       }
     }
