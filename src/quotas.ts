@@ -34,6 +34,7 @@ interface StoredQuotasCache {
   version: 1
   syncedAt: number
   providers: QuotaProviderSnapshot[]
+  coveredProviders?: QuotaProviderKind[]
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -614,6 +615,8 @@ export class QuotaEngine {
       }
     }
     this.activeControllers.clear()
+    this.inFlight = null
+    this.refreshing = false
   }
 
   loadFromCache(cached: unknown): void {
@@ -626,7 +629,7 @@ export class QuotaEngine {
     for (const p of obj.providers) {
       const rec = asRecord(p)
       const kind = asString(rec?.provider) as QuotaProviderKind | null
-      if (!rec || !kind || !QUOTA_PROVIDERS.includes(kind)) continue
+      if (!rec || !kind || !QUOTA_PROVIDERS.includes(kind) || this.disabledProviders.has(kind)) continue
       const session = parseQuotaWindow(rec.session)
       const weekly = parseQuotaWindow(rec.weekly)
       const pools = sanitizeCachedPools(rec.pools)
@@ -652,7 +655,11 @@ export class QuotaEngine {
     }
 
     if (validProviders.length > 0) {
+      const covered = Array.isArray(obj.coveredProviders)
+        ? obj.coveredProviders.filter((p): p is QuotaProviderKind => QUOTA_PROVIDERS.includes(p as QuotaProviderKind))
+        : QUOTA_PROVIDERS
       this.officialProviders = validProviders
+      this.coveredProviders = new Set(covered.filter((p) => !this.disabledProviders.has(p)))
       this.syncedAt = syncedAt
       this.source = 'cache'
     }
@@ -663,6 +670,7 @@ export class QuotaEngine {
     return {
       version: 1,
       syncedAt: this.syncedAt,
+      coveredProviders: [...this.coveredProviders],
       providers: this.officialProviders.map((p) => ({
         ...p,
         local: {
@@ -675,6 +683,7 @@ export class QuotaEngine {
 
   needsRefresh(now = this.nowFn()): boolean {
     if (!this.syncedAt || !this.officialProviders) return true
+    if (this.activeProviders().some((p) => !this.coveredProviders.has(p))) return true
     return now - this.syncedAt >= this.ttlMs
   }
 
@@ -685,6 +694,10 @@ export class QuotaEngine {
     pricing?: PricingEngine
   ): Promise<QuotasSnapshot> {
     const checkNow = now ?? this.nowFn()
+    if (this.activeProviders().length === 0) {
+      // Every provider is switched off in the settings: do not even run the account list command.
+      return this.getSnapshot(sessions, pricing, checkNow)
+    }
     if (!force && !this.needsRefresh(checkNow)) {
       return this.getSnapshot(sessions, pricing, checkNow)
     }
@@ -699,9 +712,12 @@ export class QuotaEngine {
     const run = (async () => {
       try {
         const raw = await this.execCli(controller.signal)
-        const providers = parseOrcaAccountListPayload(raw)
+        // The response always carries every provider (the per-agent form has no rate limits), so what belongs
+        // to a switched-off provider is discarded right here: never kept, shown or cached.
+        const providers = parseOrcaAccountListPayload(raw).filter((p) => !this.disabledProviders.has(p.provider))
         if (!controller.signal.aborted) {
           this.officialProviders = providers
+          this.coveredProviders = new Set(this.activeProviders())
           this.syncedAt = now ?? this.nowFn()
           this.source = 'live'
           this.lastError = null
@@ -713,9 +729,9 @@ export class QuotaEngine {
         }
       } finally {
         this.activeControllers.delete(controller)
-        this.refreshing = false
         if (this.inFlight === run) {
           this.inFlight = null
+          this.refreshing = false
         }
       }
       return this.getSnapshot(sessions, pricing, now ?? this.nowFn())
@@ -725,11 +741,48 @@ export class QuotaEngine {
     return run
   }
 
+  private disabledProviders = new Set<QuotaProviderKind>()
+  private coveredProviders = new Set<QuotaProviderKind>()
+
+  /** Providers switched off in the plugin settings are left out of every snapshot. */
+  setDisabledProviders(providers: Iterable<QuotaProviderKind>): void {
+    const next = new Set(providers)
+    const newlyDisabled = [...next].some((p) => !this.disabledProviders.has(p))
+    this.disabledProviders = next
+    if (newlyDisabled && this.inFlight) this.abortInFlight()
+    // Forget what was fetched for providers that are now off (so it is not cached either).
+    for (const p of next) this.coveredProviders.delete(p)
+    if (this.officialProviders) {
+      const remaining = this.officialProviders.filter((p) => !next.has(p.provider))
+      if (remaining.length > 0 || this.officialProviders.length === 0) {
+        this.officialProviders = remaining
+      } else {
+        this.officialProviders = null
+        this.coveredProviders.clear()
+        this.syncedAt = null
+        this.lastError = null
+        this.source = 'loading'
+      }
+    }
+  }
+
+  /** False when every quota provider is switched off (nothing is fetched, shown or cached). */
+  hasActiveProviders(): boolean {
+    return this.activeProviders().length > 0
+  }
+
+  private activeProviders(): QuotaProviderKind[] {
+    return QUOTA_PROVIDERS.filter((p) => !this.disabledProviders.has(p))
+  }
+
   getSnapshot(
     sessions: SessionTranscriptState[],
     pricing?: PricingEngine,
     now = this.nowFn()
   ): QuotasSnapshot {
+    if (this.activeProviders().length === 0) {
+      return { source: 'disabled', syncedAt: null, refreshing: false, lastError: null, providers: [] }
+    }
     const localByProvider = pricing
       ? computeLocalRollingUsage(sessions, pricing, now)
       : emptyLocalUsageByProvider()
@@ -741,7 +794,7 @@ export class QuotaEngine {
         syncedAt: this.syncedAt,
         refreshing: this.refreshing,
         lastError: this.lastError,
-        providers: QUOTA_PROVIDERS.map((provider) => ({
+        providers: this.activeProviders().map((provider) => ({
           provider,
           label: PROVIDER_LABELS[provider],
           status,
@@ -760,7 +813,7 @@ export class QuotaEngine {
     }
 
     const byKind = new Map(this.officialProviders.map((p) => [p.provider, p]))
-    const providers = QUOTA_PROVIDERS.map((kind) => {
+    const providers = this.activeProviders().map((kind) => {
       const base = byKind.get(kind)
       if (!base) {
         return {

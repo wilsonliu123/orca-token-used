@@ -75,6 +75,7 @@ export interface UiMessages {
   quotaUnavailableLabel: string
   quotaErrorLabel: string
   quotaLoadingLabel: string
+  quotaSourceOff: string
   quotaNoDataLabel: string
   quotaSourceLive: string
   quotaSourceCache: string
@@ -188,6 +189,7 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     quotaUnavailableLabel: '官方方案額度不可用',
     quotaErrorLabel: '額度讀取失敗',
     quotaLoadingLabel: '正在取得即時額度…',
+    quotaSourceOff: '額度追蹤已關閉',
     quotaNoDataLabel: '尚未載入額度資料',
     quotaSourceLive: '即時額度',
     quotaSourceCache: '快取額度',
@@ -309,6 +311,7 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     quotaUnavailableLabel: '官方方案额度不可用',
     quotaErrorLabel: '额度读取失败',
     quotaLoadingLabel: '正在获取实时额度…',
+    quotaSourceOff: '额度跟踪已关闭',
     quotaNoDataLabel: '尚未加载额度数据',
     quotaSourceLive: '实时额度',
     quotaSourceCache: '缓存额度',
@@ -430,6 +433,7 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     quotaUnavailableLabel: 'Official quota unavailable',
     quotaErrorLabel: 'Quota check failed',
     quotaLoadingLabel: 'Checking provider quotas…',
+    quotaSourceOff: 'Quota tracking is off',
     quotaNoDataLabel: 'Quota telemetry not loaded yet',
     quotaSourceLive: 'Live quotas',
     quotaSourceCache: 'Cached quotas',
@@ -551,6 +555,7 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     quotaUnavailableLabel: '公式クォータ利用不可',
     quotaErrorLabel: 'クォータ取得エラー',
     quotaLoadingLabel: 'クォータを取得中…',
+    quotaSourceOff: 'クォータの追跡はオフです',
     quotaNoDataLabel: 'クォータ未読み込み',
     quotaSourceLive: 'ライブ枠',
     quotaSourceCache: 'キャッシュ枠',
@@ -672,6 +677,7 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     quotaUnavailableLabel: '공식 할당량 사용 불가',
     quotaErrorLabel: '할당량 조회 오류',
     quotaLoadingLabel: '할당량 확인 중…',
+    quotaSourceOff: '할당량 추적이 꺼져 있습니다',
     quotaNoDataLabel: '할당량 데이터 없음',
     quotaSourceLive: '실시간 한도',
     quotaSourceCache: '캐시된 한도',
@@ -793,6 +799,7 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     quotaUnavailableLabel: 'Oficiální kvóta není dostupná',
     quotaErrorLabel: 'Kontrola kvóty selhala',
     quotaLoadingLabel: 'Zjišťuji kvóty poskytovatelů…',
+    quotaSourceOff: 'Sledování kvót je vypnuto',
     quotaNoDataLabel: 'Data o kvótách zatím nejsou načtena',
     quotaSourceLive: 'Živé kvóty',
     quotaSourceCache: 'Kvóty z cache',

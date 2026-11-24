@@ -409,6 +409,7 @@ export class TranscriptScanner {
   private cachedDiscovered: DiscoveredFile[] = []
   private geminiProjectMap = new Map<string, string>()
   private dirtyHistoricalCache = false
+  private disabledAgents = new Set<AgentKind>()
 
   constructor(options: ScannerOptions = {}) {
     this.homeDir = options.homeDir ?? (process.env.TOKEN_PULSE_HOME_DIR || os.homedir())
@@ -432,6 +433,10 @@ export class TranscriptScanner {
     const seenHydratedInodes = new Set<string>()
     for (const [rawFilePath, item] of Object.entries(items)) {
       if (!item || typeof item !== 'object' || item.updatedAtMs < cutoffMs) continue
+      if (this.disabledAgents.has(item.agent)) {
+        this.dirtyHistoricalCache = true
+        continue
+      }
       let filePath = rawFilePath
       const inodeKey = canonicalInodeOrRealpath(rawFilePath)
       if (inodeKey) {
@@ -643,7 +648,8 @@ export class TranscriptScanner {
       this.journalIndex = readOrcaJournalIndex(
         this.orcaAppDirs,
         this.homeDir,
-        this.knownWorkspacePaths
+        this.knownWorkspacePaths,
+        this.disabledAgents
       )
       this.lastJournalRefreshMs = now
     }
@@ -744,7 +750,27 @@ export class TranscriptScanner {
   }
 
   getSessions(): SessionTranscriptState[] {
-    return Array.from(this.statesByFile.values()).filter((s) => !s.isInternalHelper)
+    return Array.from(this.statesByFile.values()).filter(
+      (s) => !s.isInternalHelper && !this.disabledAgents.has(s.agent)
+    )
+  }
+
+  /** Agents switched off in the plugin settings: they are neither discovered nor reported. */
+  setDisabledAgents(agents: Iterable<AgentKind>): void {
+    const next = new Set(agents)
+    const same = next.size === this.disabledAgents.size && [...next].every((a) => this.disabledAgents.has(a))
+    if (same) return
+    this.disabledAgents = next
+    for (const [filePath, st] of this.statesByFile) {
+      if (!next.has(st.agent)) continue
+      this.statesByFile.delete(filePath)
+      this.subagentMetaByFile.delete(filePath)
+      this.dirtyHistoricalCache = true
+    }
+    this.lastJournalRefreshMs = 0
+    // Force a fresh discovery so re-enabled agents are picked up immediately.
+    this.cachedDiscovered = []
+    this.lastFullDiscoveryMs = 0
   }
 
   private refreshUnchangedSubagentMeta(
@@ -845,7 +871,8 @@ export class TranscriptScanner {
       this.journalIndex = readOrcaJournalIndex(
         this.orcaAppDirs,
         this.homeDir,
-        this.knownWorkspacePaths
+        this.knownWorkspacePaths,
+        this.disabledAgents
       )
       this.lastJournalRefreshMs = now
     }
@@ -922,7 +949,7 @@ export class TranscriptScanner {
     }
 
     if (doFullWalk) {
-      for (const filePath of this.statesByFile.keys()) {
+      for (const [filePath, st] of this.statesByFile) {
         if (!activePaths.has(filePath)) {
           this.statesByFile.delete(filePath)
           this.subagentMetaByFile.delete(filePath)
@@ -948,6 +975,7 @@ export class TranscriptScanner {
       sizeBytes: number,
       stat: Stats
     ) => {
+      if (this.disabledAgents.has(agent)) return
       const dedupeKey = canonicalInodeOrRealpath(filePath, stat)
       if (!dedupeKey || seenInodes.has(dedupeKey)) return
       seenInodes.add(dedupeKey)
@@ -961,10 +989,9 @@ export class TranscriptScanner {
     }
 
     // 1. Claude Code (`~/.claude/projects` + custom CLAUDE_CONFIG_DIR)
-    const rawClaudeHomes = [
-      path.join(this.homeDir, '.claude'),
-      ...(this.journalIndex.accountHomes.get('claude') ?? [])
-    ]
+    const rawClaudeHomes = this.disabledAgents.has('claude')
+      ? []
+      : [path.join(this.homeDir, '.claude'), ...(this.journalIndex.accountHomes.get('claude') ?? [])]
     for (const ch of uniqueExistingDirs(rawClaudeHomes)) {
       const projDir = path.join(ch, 'projects')
       if (!fs.existsSync(projDir)) continue
@@ -984,11 +1011,12 @@ export class TranscriptScanner {
     }
 
     // 2. Codex (`~/.codex/sessions`, Orca `codex-runtime-home/home/sessions`, `codex-accounts/*/sessions`, custom CODEX_HOME)
-    const rawCodexSessionDirs: string[] = [path.join(this.homeDir, '.codex', 'sessions')]
-    for (const h of this.journalIndex.accountHomes.get('codex') ?? []) {
+    const codexOn = !this.disabledAgents.has('codex')
+    const rawCodexSessionDirs: string[] = codexOn ? [path.join(this.homeDir, '.codex', 'sessions')] : []
+    for (const h of codexOn ? (this.journalIndex.accountHomes.get('codex') ?? []) : []) {
       rawCodexSessionDirs.push(path.join(h, 'sessions'))
     }
-    for (const orcaDir of this.orcaAppDirs) {
+    for (const orcaDir of codexOn ? this.orcaAppDirs : []) {
       rawCodexSessionDirs.push(path.join(orcaDir, 'codex-runtime-home', 'home', 'sessions'))
       const accsDir = path.join(orcaDir, 'codex-accounts')
       for (const ent of safeReaddir(accsDir)) {
@@ -1020,11 +1048,14 @@ export class TranscriptScanner {
     }
 
     // 3. Antigravity (`<orca>/antigravity-chat/**/brain/<id>/.system_generated/logs/transcript.jsonl` + `~/.gemini/antigravity*/brain`)
-    const rawAgBrainDirs: string[] = [
-      path.join(this.homeDir, '.gemini', 'antigravity', 'brain'),
-      path.join(this.homeDir, '.gemini', 'antigravity-cli', 'brain')
-    ]
-    for (const orcaDir of this.orcaAppDirs) {
+    const agOn = !this.disabledAgents.has('antigravity')
+    const rawAgBrainDirs: string[] = agOn
+      ? [
+          path.join(this.homeDir, '.gemini', 'antigravity', 'brain'),
+          path.join(this.homeDir, '.gemini', 'antigravity-cli', 'brain')
+        ]
+      : []
+    for (const orcaDir of agOn ? this.orcaAppDirs : []) {
       rawAgBrainDirs.push(path.join(orcaDir, 'antigravity-chat', 'antigravity-acp', 'brain'))
       rawAgBrainDirs.push(path.join(orcaDir, 'antigravity-chat', 'antigravity-cli', 'brain'))
       const agAccs = path.join(orcaDir, 'antigravity-accounts')
@@ -1056,7 +1087,7 @@ export class TranscriptScanner {
     // 4. Gemini CLI (`~/.gemini/tmp/<projectHash>/chats/session-*.json`)
     const geminiRoot = path.join(this.homeDir, '.gemini')
     const geminiTmp = path.join(geminiRoot, 'tmp')
-    if (fs.existsSync(geminiTmp)) {
+    if (!this.disabledAgents.has('gemini') && fs.existsSync(geminiTmp)) {
       this.geminiProjectMap = buildGeminiProjectHashLookup(geminiRoot, this.knownWorkspacePaths)
       const found: Array<{ filePath: string; mtimeMs: number; sizeBytes: number; stat: Stats }> = []
       walkMatchingFiles(

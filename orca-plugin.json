@@ -104,6 +104,34 @@
         "default": 85,
         "minimum": 0,
         "maximum": 100
+      },
+      {
+        "key": "enableClaude",
+        "title": "Track Claude Code",
+        "description": "When off, stops reading Claude Code transcripts and settings, clears its cached sessions, and hides it from the UI and Quotas. Shared Orca account list calls discard Claude Code data and are skipped once all quota providers are off.",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "enableCodex",
+        "title": "Track Codex",
+        "description": "When off, stops reading Codex transcripts and settings, clears its cached sessions, and hides it from the UI and Quotas. Shared Orca account list calls discard Codex data and are skipped once all quota providers are off.",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "enableAntigravity",
+        "title": "Track Antigravity",
+        "description": "When off, stops reading Antigravity transcripts and settings, clears its cached sessions, and hides it from the UI and Quotas. Shared Orca account list calls discard Antigravity data and are skipped once all quota providers are off.",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "enableGemini",
+        "title": "Track Gemini CLI",
+        "description": "When off, stops reading Gemini CLI transcripts and settings, clears its cached sessions, and hides it from the UI.",
+        "type": "boolean",
+        "default": true
       }
     ],
     "statusBarItems": [

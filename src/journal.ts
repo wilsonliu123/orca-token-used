@@ -231,12 +231,13 @@ export function normalizeReasoningLevel(raw: unknown): string | null {
 function readLocalCliConfiguredModels(
   homeDir: string,
   orcaDirs: string[],
-  accountHomes: Map<AgentKind, Set<string>>
+  accountHomes: Map<AgentKind, Set<string>>,
+  disabled: ReadonlySet<AgentKind> = new Set()
 ): Partial<Record<AgentKind, string>> {
   const out: Partial<Record<AgentKind, string>> = {}
 
   // 1) Antigravity CLI (`~/.gemini/antigravity-cli/settings.json`)
-  try {
+  if (!disabled.has('antigravity')) try {
     const agSettingsPath = path.join(homeDir, '.gemini', 'antigravity-cli', 'settings.json')
     if (fs.existsSync(agSettingsPath)) {
       const parsed = JSON.parse(fs.readFileSync(agSettingsPath, 'utf8')) as { model?: unknown }
@@ -253,7 +254,7 @@ function readLocalCliConfiguredModels(
     path.join(homeDir, '.codex', 'config.toml'),
     ...orcaDirs.map((d) => path.join(d, 'codex-runtime-home', 'home', 'config.toml'))
   ]
-  for (const cfgPath of codexConfigs) {
+  for (const cfgPath of disabled.has('codex') ? [] : codexConfigs) {
     try {
       if (!fs.existsSync(cfgPath)) continue
       const text = fs.readFileSync(cfgPath, 'utf8')
@@ -270,7 +271,7 @@ function readLocalCliConfiguredModels(
 
   // 3) Claude Code
   const claudeHomes = [...(accountHomes.get('claude') ?? []), path.join(homeDir, '.claude')]
-  for (const claudeHome of claudeHomes) {
+  for (const claudeHome of disabled.has('claude') ? [] : claudeHomes) {
     try {
       const claudeSettingsPath = path.join(claudeHome, 'settings.json')
       if (!fs.existsSync(claudeSettingsPath)) continue
@@ -286,7 +287,7 @@ function readLocalCliConfiguredModels(
   }
 
   // 4) Gemini CLI (`~/.gemini/settings.json`)
-  try {
+  if (!disabled.has('gemini')) try {
     const gemSettingsPath = path.join(homeDir, '.gemini', 'settings.json')
     if (fs.existsSync(gemSettingsPath)) {
       const parsed = JSON.parse(fs.readFileSync(gemSettingsPath, 'utf8')) as {
@@ -677,7 +678,8 @@ function readAntigravityMetadata(
 export function readOrcaJournalIndex(
   orcaDirs = defaultOrcaAppDataDirs(),
   homeDir = os.homedir(),
-  extraKnownPaths?: Iterable<string>
+  extraKnownPaths?: Iterable<string>,
+  disabledAgents: ReadonlySet<AgentKind> = new Set()
 ): JournalIndex {
   const accountHomes = new Map<AgentKind, Set<string>>()
   for (const [agent, value] of [
@@ -685,7 +687,7 @@ export function readOrcaJournalIndex(
     ['codex', process.env.CODEX_HOME]
   ] as const) {
     const home = value?.trim()
-    if (!home) continue
+    if (!home || disabledAgents.has(agent)) continue
     // An explicit scan home scopes discovery to that root, including configured provider homes.
     if (path.resolve(homeDir) !== path.resolve(os.homedir())) {
       const relative = path.relative(homeDir, home)
@@ -700,14 +702,23 @@ export function readOrcaJournalIndex(
   }
   preferredNormPaths.delete('')
 
-  const agDirs = collectAntigravityDataDirs(homeDir, orcaDirs)
-  const agMeta = readAntigravityMetadata(agDirs, loadSqliteConstructor(), preferredNormPaths)
+  const agMeta = disabledAgents.has('antigravity')
+    ? {
+        summaries: new Map<string, AntigravityConversationSummaryMeta>(),
+        historyByConvId: new Map<string, string>(),
+        historyEntries: [] as AntigravityHistoryEntry[]
+      }
+    : readAntigravityMetadata(
+        collectAntigravityDataDirs(homeDir, orcaDirs),
+        loadSqliteConstructor(),
+        preferredNormPaths
+      )
   return {
     byNativeId: new Map(),
     accountHomes,
     antigravitySummaries: agMeta.summaries,
     antigravityHistoryByConversationId: agMeta.historyByConvId,
     antigravityHistoryEntries: agMeta.historyEntries,
-    cliConfiguredModels: readLocalCliConfiguredModels(homeDir, orcaDirs, accountHomes)
+    cliConfiguredModels: readLocalCliConfiguredModels(homeDir, orcaDirs, accountHomes, disabledAgents)
   }
 }

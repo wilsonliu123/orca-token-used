@@ -102,6 +102,7 @@ Transcript contents, prompts, responses, and local paths are not sent to those e
 | Live transcript refresh interval | 2 seconds | How often active transcripts are tailed. |
 | Daily spend warning threshold | $0 (off) | Highlights the status bar in danger tone when today's estimated spend reaches this USD amount. |
 | Quota warning threshold | 85% | Highlights the status bar in warning/danger tone when any provider 5h or weekly quota reaches this percentage (0 = off). |
+| Track Claude Code / Codex / Antigravity / Gemini CLI | on | Per-agent switch. When off, the agent's transcripts and settings are not read, its already loaded sessions are removed from the plugin's history cache (rebuilt from the transcripts when it is switched back on), and it is not shown (Live, Sessions, Stats, Quotas, open detail). Two Orca calls cannot be filtered by agent and stay shared: Orca's session history list (`agent.listSessions`) is still requested while any agent is on, and rows of switched-off agents are discarded before they are stored (the request is skipped when every agent is off). Orca's `account list --json` is a single call that returns every provider together with its rate limits (the per-agent form has none), so it still runs while any quota provider is on; the switched-off provider's part is discarded and never cached, and a cache written earlier is rewritten at startup (deleted when every provider is off). Once every quota provider is off the call is skipped and the Quotas tab says so. |
 
 ## Development
 

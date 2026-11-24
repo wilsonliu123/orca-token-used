@@ -4,8 +4,10 @@ import { PricingEngine } from './pricing'
 import {
   computeLocalRollingUsage,
   parseOrcaAccountListPayload,
-  QuotaEngine
+  QuotaEngine,
+  QUOTAS_STORAGE_KEY
 } from './quotas'
+import { TranscriptScanner } from './scanner'
 import * as workerModule from './worker'
 
 function sampleAccountListPayload() {
@@ -508,6 +510,164 @@ describe('Worker Quotas RPC & non-blocking integration', () => {
       assert.deepEqual(worker.refusals, [])
     } finally {
       await worker.deactivate()
+    }
+  })
+})
+
+describe('Per-agent tracking switches: quota cache, refresh, and historical cache', () => {
+  const t0 = 1_800_000_000_000
+  const pricing = new PricingEngine()
+
+  test('switching off every cached provider returns to the loading state instead of an empty cache', async () => {
+    let failNext = false
+    const engine = new QuotaEngine({
+      execCli: async () => {
+        if (failNext) throw new Error('CLI timeout')
+        return sampleAccountListPayload()
+      }
+    })
+    await engine.refresh(true, t0)
+    engine.setDisabledProviders(['codex', 'antigravity'])
+    assert.deepEqual(engine.toStorableCache()?.providers.map((p) => p.provider), ['claude'])
+
+    engine.setDisabledProviders(['codex', 'claude'])
+    assert.equal(engine.toStorableCache(), null)
+    assert.equal(engine.needsRefresh(t0 + 1000), true)
+    const pending = engine.getSnapshot([], pricing, t0 + 1000)
+    assert.equal(pending.source, 'loading')
+    assert.equal(pending.syncedAt, null)
+    assert.deepEqual(pending.providers.map((p) => [p.provider, p.status]), [['antigravity', 'loading']])
+
+    failNext = true
+    const failed = await engine.refresh(false, t0 + 2000)
+    assert.equal(failed.source, 'error')
+    assert.equal(failed.providers[0].status, 'error')
+  })
+
+  test('a provider missing from the cache because it was off is refreshed right away, not after the TTL', async () => {
+    let calls = 0
+    const writer = new QuotaEngine({ execCli: async () => sampleAccountListPayload() })
+    writer.setDisabledProviders(['codex'])
+    await writer.refresh(true, t0)
+    const cached = writer.toStorableCache()
+    assert.deepEqual(cached?.coveredProviders, ['antigravity', 'claude'])
+
+    const reader = new QuotaEngine({
+      execCli: async () => {
+        calls++
+        return sampleAccountListPayload()
+      }
+    })
+    reader.setDisabledProviders([])
+    reader.loadFromCache(cached)
+    assert.equal(reader.needsRefresh(t0 + 60_000), true)
+    const refreshed = await reader.refresh(false, t0 + 60_000)
+    assert.equal(calls, 1)
+    assert.notEqual(refreshed.providers.find((p) => p.provider === 'codex')?.status, 'unavailable')
+    assert.equal(reader.needsRefresh(t0 + 120_000), false)
+
+    const stillOff = new QuotaEngine({ execCli: async () => sampleAccountListPayload() })
+    stillOff.setDisabledProviders(['codex'])
+    stillOff.loadFromCache(cached)
+    assert.equal(stillOff.needsRefresh(t0 + 60_000), false)
+
+    const legacy = new QuotaEngine({ execCli: async () => sampleAccountListPayload() })
+    legacy.loadFromCache({ ...reader.toStorableCache(), coveredProviders: undefined })
+    assert.equal(legacy.needsRefresh(t0 + 120_000), false)
+  })
+
+  test('switching a provider off aborts a running refresh, and the next refresh can start at once', async () => {
+    let calls = 0
+    let aborted = 0
+    const engine = new QuotaEngine({
+      execCli: async (signal) => {
+        calls++
+        signal.addEventListener('abort', () => aborted++)
+        await new Promise((r) => setTimeout(r, 25))
+        if (signal.aborted) throw new Error('Aborted')
+        return sampleAccountListPayload()
+      }
+    })
+    const slow = engine.refresh(true, t0)
+    engine.setDisabledProviders(['codex'])
+    await slow
+    assert.equal(aborted, 1)
+    assert.equal(engine.toStorableCache(), null)
+
+    const next = await engine.refresh(false, t0 + 1000)
+    assert.equal(calls, 2)
+    assert.equal(next.source, 'live')
+    assert.deepEqual(engine.toStorableCache()?.providers.map((p) => p.provider), ['antigravity', 'claude'])
+  })
+
+  test('sessions of a switched-off agent are dropped from the scanner and from the historical cache', () => {
+    const now = Date.now()
+    const old = now - 3 * 86_400_000
+    const item = (agent: 'claude' | 'codex', sessionId: string) => ({
+      sessionId,
+      agent,
+      filePath: `/nonexistent/${sessionId}.jsonl`,
+      sizeBytes: 10,
+      mtimeMs: old,
+      cwd: null,
+      titleHint: null,
+      isInternalHelper: false,
+      latestModel: null,
+      createdAtMs: old,
+      updatedAtMs: old,
+      turns: [{ k: 't1', ts: old, in: 1, out: 1, rs: 0, cr: 0, cw: 0, tot: 2, dur: null, tps: null, m: null, cost: null }]
+    })
+    const raw = {
+      files: {
+        '/nonexistent/c1.jsonl': item('claude', 'c1'),
+        '/nonexistent/x1.jsonl': item('codex', 'x1')
+      }
+    }
+
+    const scanner = new TranscriptScanner({ homeDir: '/nonexistent-home', orcaAppDirs: [] })
+    scanner.setDisabledAgents(['codex'])
+    scanner.hydrateHistoricalCache(raw)
+    assert.equal(scanner.hasDirtyHistoricalCache(), true)
+    const first = scanner.consumeHistoricalCacheSnapshot(now)
+    assert.deepEqual(Object.values(first?.files ?? {}).map((f) => f.sessionId), ['c1'])
+
+    scanner.setDisabledAgents(['codex', 'claude'])
+    assert.equal(scanner.hasDirtyHistoricalCache(), true)
+    assert.deepEqual(Object.keys(scanner.consumeHistoricalCacheSnapshot(now)?.files ?? {}), [])
+    assert.equal(scanner.getSessions().length, 0)
+  })
+
+  test('worker start reads settings before the caches and deletes a quota cache left only with switched-off providers', async () => {
+    const writer = new QuotaEngine({ execCli: async () => sampleAccountListPayload() })
+    writer.setDisabledProviders(['claude', 'antigravity'])
+    await writer.refresh(true, t0)
+    const codexOnly = writer.toStorableCache()
+    assert.ok(codexOnly)
+
+    const previousBin = process.env.ORCA_BIN
+    process.env.ORCA_BIN = '/nonexistent/orca-for-tests'
+    const host = mockHost({
+      settings: { enableCodex: false },
+      storage: {
+        [QUOTAS_STORAGE_KEY]: JSON.parse(JSON.stringify({ ...codexOnly, syncedAt: Date.now() }))
+      },
+      handlers: {
+        'workspace.list': () => ({ workspaces: [], truncated: false }),
+        'workspace.readContext': () => ({ branch: 'main', displayName: 'main', terminals: [] }),
+        'agents.list': () => ({ agents: [] }),
+        'statusBar.update': () => ({ ok: true })
+      }
+    })
+    const worker = await mountWorker(workerModule, { host })
+    try {
+      assert.equal(QUOTAS_STORAGE_KEY in host.data().storage, false)
+      const snap = await worker.request('dashboard.get', { forceScan: false })
+      assert.deepEqual(snap.quotas?.providers.map((p) => p.provider), ['antigravity', 'claude'])
+      assert.equal(snap.quotas?.providers.some((p) => p.status === 'unavailable'), false)
+    } finally {
+      await worker.deactivate()
+      if (previousBin === undefined) delete process.env.ORCA_BIN
+      else process.env.ORCA_BIN = previousBin
     }
   })
 })

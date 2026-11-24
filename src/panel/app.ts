@@ -1413,9 +1413,12 @@ export function renderQuotasView(
   quotasError: string | null = null
 ): string {
   const quotas: QuotasSnapshot | undefined = snap.quotas
-  const syncing = isRefreshingQuotas || Boolean(quotas?.refreshing) || quotas?.source === 'loading'
+  const quotasOff = quotas?.source === 'disabled'
+  const syncing = !quotasOff && (isRefreshingQuotas || Boolean(quotas?.refreshing) || quotas?.source === 'loading')
 
-  const sourceLabel = syncing
+  const sourceLabel = quotasOff
+    ? msg.quotaSourceOff
+    : syncing
     ? msg.quotaSourceLoading
     : quotas?.source === 'live'
       ? msg.quotaSourceLive
@@ -1444,7 +1447,7 @@ export function renderQuotasView(
         type="button"
         class="tp-quota-refresh-btn ${syncing ? 'tp-spinning' : ''}"
         data-quotas-refresh="1"
-        ${syncing ? 'disabled' : ''}
+        ${syncing || quotasOff ? 'disabled' : ''}
         title="${escapeHtml(msg.quotaRefreshAction)}"
       >
         ${REFRESH_ICON_SVG}
@@ -1476,7 +1479,7 @@ export function renderQuotasView(
     <div class="tp-quota-list">
       ${toolbarHtml}
       ${errorBannerHtml}
-      ${cardsHtml || `<div class="tp-empty">${escapeHtml(msg.quotaNoDataLabel)}</div>`}
+      ${cardsHtml || `<div class="tp-empty">${escapeHtml(quotasOff ? msg.quotaSourceOff : msg.quotaNoDataLabel)}</div>`}
     </div>
   `
 }
@@ -2131,6 +2134,10 @@ function initBrowserPanel(): void {
       if (currentTab !== 'live' || selectedLiveAgentKey !== requestedKey) {
         return
       }
+      if (dropDisabledLiveDetail()) {
+        renderApp()
+        return
+      }
       if (res?.agent) {
         const genAt = typeof res.generatedAt === 'number' ? res.generatedAt : Date.now()
         if (genAt >= liveDetailGeneratedAt) {
@@ -2151,6 +2158,23 @@ function initBrowserPanel(): void {
     } finally {
       livePollInFlight = false
     }
+  }
+
+  /** Closes an open Live detail whose agent was switched off in the plugin settings. */
+  function dropDisabledLiveDetail(): boolean {
+    const disabled = snapshot?.disabledAgents
+    if (!selectedLiveAgentKey || !disabled || disabled.length === 0) return false
+    const key = selectedLiveAgentKey
+    const hit =
+      (liveDetailAgent !== null && disabled.includes(liveDetailAgent.agent)) ||
+      disabled.some((agent) => key.startsWith(`${agent}:`))
+    if (!hit) return false
+    selectedLiveAgentKey = null
+    liveDetailAgent = null
+    liveDetailGeneratedAt = 0
+    resetStreamState()
+    syncLiveStreamEngines()
+    return true
   }
 
   function selectLiveAgent(sessionKey: string | null): void {
@@ -2450,6 +2474,10 @@ function initBrowserPanel(): void {
 
     window.orca.plugin.on('dashboard.updated', (nextSnap) => {
       snapshot = nextSnap
+      if (dropDisabledLiveDetail()) {
+        renderApp()
+        return
+      }
       if (nextSnap.quotas && nextSnap.quotas.source !== 'error' && !nextSnap.quotas.lastError) {
         quotasError = null
       }
@@ -2500,6 +2528,7 @@ function initBrowserPanel(): void {
         selectedLiveAgentKey = null
         liveDetailAgent = null
       }
+      dropDisabledLiveDetail()
       if (prevKey !== selectedLiveAgentKey) {
         resetStreamState()
       }
@@ -2519,6 +2548,7 @@ function initBrowserPanel(): void {
         snapshot = snap
         if (selectedLiveAgentKey) {
           liveDetailAgent = findLiveAgent(snap, selectedLiveAgentKey) ?? liveDetailAgent
+          dropDisabledLiveDetail()
         }
         renderApp()
       })

@@ -52,6 +52,8 @@ export interface WorkspaceRuntimeContext {
   focusedPath: string | null
   knownWorkspaces?: KnownOrcaWorkspace[]
   liveAgents: OrcaLiveAgentInfo[]
+  /** Agents switched off in the plugin settings. */
+  disabledAgents?: ReadonlySet<AgentKind>
 }
 
 export function emptyTokenBreakdown(): TokenBreakdown {
@@ -537,7 +539,8 @@ function aggregatePeriod(
   buckets: TimeBucket[],
   prevStartMs: number,
   prevEndMs: number,
-  pricing: PricingEngine
+  pricing: PricingEngine,
+  agents: readonly AgentKind[] = ALL_AGENTS
 ): PeriodSummary {
   if (buckets.length === 0) {
     return {
@@ -669,7 +672,7 @@ function aggregatePeriod(
   totalTokens.costUsd = +totalTokens.costUsd.toFixed(6)
   const avgTps = totalDurSec > 0 ? +(totalGenOut / totalDurSec).toFixed(1) : 0
 
-  const byAgent: AgentSummaryRow[] = ALL_AGENTS.map((agent) => {
+  const byAgent: AgentSummaryRow[] = agents.map((agent) => {
     const sub = computeTurnSummary(agent, perAgentTurns[agent], pricing, perAgentFallbackModel[agent])
     const sharePercent =
       totalTokens.total > 0 ? +((sub.tokens.total / totalTokens.total) * 100).toFixed(1) : 0
@@ -744,6 +747,9 @@ export function buildDashboardSnapshot(
   runtime: WorkspaceRuntimeContext,
   now = Date.now()
 ): DashboardSnapshot {
+  runtime = withoutDisabledLiveAgents(runtime)
+  const disabledAgents = runtime.disabledAgents
+  const enabledAgents = ALL_AGENTS.filter((a) => !disabledAgents?.has(a))
   const indexedWorkspaces = indexKnownWorkspaces(runtime.knownWorkspaces ?? [])
   const liveBySessionKey = indexLiveAgents(runtime.liveAgents)
   const enrichedAll = enrichSessions(rawSessions, journal, pricing, indexedWorkspaces, liveBySessionKey)
@@ -903,20 +909,22 @@ export function buildDashboardSnapshot(
     const monthStart = monthBuckets[0].startMs
 
     return {
-      day: aggregatePeriod(scopeSessions, dayBuckets, yesterdayStart, todayStart, pricing),
+      day: aggregatePeriod(scopeSessions, dayBuckets, yesterdayStart, todayStart, pricing, enabledAgents),
       week: aggregatePeriod(
         scopeSessions,
         weekBuckets,
         weekStart - 7 * 86_400_000,
         weekStart,
-        pricing
+        pricing,
+        enabledAgents
       ),
       month: aggregatePeriod(
         scopeSessions,
         monthBuckets,
         monthStart - 30 * 86_400_000,
         monthStart,
-        pricing
+        pricing,
+        enabledAgents
       )
     }
   }
@@ -1076,7 +1084,20 @@ function sessionMetadata(journal: JournalIndex, state: SessionTranscriptState) {
   return meta?.provider === state.agent ? meta : undefined
 }
 
-function liveAgentKind(agent: OrcaLiveAgentInfo): AgentKind | null {
+/** Drops live terminals of agents switched off in the settings (same identification as the rest of the module). */
+export function withoutDisabledLiveAgents(runtime: WorkspaceRuntimeContext): WorkspaceRuntimeContext {
+  const disabled = runtime.disabledAgents
+  if (!disabled || disabled.size === 0) return runtime
+  return {
+    ...runtime,
+    liveAgents: runtime.liveAgents.filter((a) => {
+      const kind = liveAgentKind(a)
+      return !(kind && disabled.has(kind))
+    })
+  }
+}
+
+export function liveAgentKind(agent: OrcaLiveAgentInfo): AgentKind | null {
   return agent.agent ? mapOrcaAgentKind(agent.agent) : inferAgentFromTerminalTitle(agent.title)
 }
 
@@ -1504,6 +1525,7 @@ export function pollSingleLiveAgent(
   now = Date.now()
 ): LiveAgentCard | null {
   if (!sessionKey || typeof sessionKey !== 'string') return null
+  runtime = withoutDisabledLiveAgents(runtime)
   const recentCutoff = now - 6 * 3600_000
   const hotRaw = rawSessions.filter(
     (st) =>

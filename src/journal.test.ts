@@ -274,3 +274,86 @@ test('scans custom provider homes and managed agent transcripts without Orca sta
     fs.rmSync(dir, { recursive: true, force: true })
   }
 })
+
+test('does not read settings, account homes or Antigravity metadata of switched-off agents', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tp-disabled-agents-'))
+  const claudeHome = path.join(dir, 'custom-claude')
+  const codexHome = path.join(dir, 'custom-codex')
+  const priorClaudeHome = process.env.CLAUDE_CONFIG_DIR
+  const priorCodexHome = process.env.CODEX_HOME
+  try {
+    process.env.CLAUDE_CONFIG_DIR = claudeHome
+    process.env.CODEX_HOME = codexHome
+    fs.mkdirSync(claudeHome, { recursive: true })
+    fs.mkdirSync(codexHome, { recursive: true })
+    fs.mkdirSync(path.join(dir, '.gemini', 'antigravity-cli'), { recursive: true })
+    fs.writeFileSync(path.join(claudeHome, 'settings.json'), '{"model":"claude-opus"}')
+    fs.writeFileSync(path.join(codexHome, 'config.toml'), 'model = "gpt-codex"')
+    fs.writeFileSync(path.join(dir, '.gemini', 'settings.json'), '{"model":{"name":"gemini-pro"}}')
+    fs.writeFileSync(path.join(dir, '.gemini', 'antigravity-cli', 'settings.json'), '{"model":"ag-model"}')
+
+    const everything = readOrcaJournalIndex([path.join(dir, 'orca')], dir)
+    assert.equal(everything.cliConfiguredModels?.claude, 'claude-opus')
+    assert.equal(everything.cliConfiguredModels?.codex, 'gpt-codex')
+    assert.equal(everything.cliConfiguredModels?.antigravity, 'ag-model')
+    assert.equal(everything.accountHomes.has('claude'), true)
+    assert.equal(everything.accountHomes.has('codex'), true)
+
+    const onlyGemini = readOrcaJournalIndex(
+      [path.join(dir, 'orca')],
+      dir,
+      undefined,
+      new Set(['claude', 'codex', 'antigravity'] as const)
+    )
+    assert.equal(onlyGemini.cliConfiguredModels?.claude, undefined)
+    assert.equal(onlyGemini.cliConfiguredModels?.codex, undefined)
+    assert.equal(onlyGemini.cliConfiguredModels?.antigravity, undefined)
+    assert.equal(onlyGemini.accountHomes.has('claude'), false)
+    assert.equal(onlyGemini.accountHomes.has('codex'), false)
+    assert.equal(onlyGemini.antigravitySummaries.size, 0)
+
+    const noneEnabled = readOrcaJournalIndex(
+      [path.join(dir, 'orca')],
+      dir,
+      undefined,
+      new Set(['claude', 'codex', 'antigravity', 'gemini'] as const)
+    )
+    assert.deepEqual(noneEnabled.cliConfiguredModels, {})
+  } finally {
+    if (priorClaudeHome === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = priorClaudeHome
+    if (priorCodexHome === undefined) delete process.env.CODEX_HOME
+    else process.env.CODEX_HOME = priorCodexHome
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('scanner skips transcripts and CLI settings of a switched-off agent and picks them up again when re-enabled', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tp-scanner-toggle-'))
+  const claudeHome = path.join(dir, '.claude')
+  const priorClaudeHome = process.env.CLAUDE_CONFIG_DIR
+  try {
+    delete process.env.CLAUDE_CONFIG_DIR
+    const filePath = path.join(claudeHome, 'projects', 'project', 'claude.jsonl')
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(filePath, JSON.stringify({ type: 'user', timestamp: new Date().toISOString() }) + '\n')
+    fs.writeFileSync(path.join(claudeHome, 'settings.json'), '{"model":"claude-opus"}')
+
+    const scanner = new TranscriptScanner({ homeDir: dir, orcaAppDirs: [path.join(dir, 'orca')] })
+    scanner.setDisabledAgents(['claude'])
+    assert.equal(scanner.scan({ forceFullDiscovery: true }).length, 0)
+    assert.equal(scanner.getJournalIndex().cliConfiguredModels?.claude, undefined)
+
+    scanner.setDisabledAgents([])
+    assert.deepEqual(scanner.scan({ forceFullDiscovery: true }).map((s) => s.agent), ['claude'])
+    assert.equal(scanner.getJournalIndex().cliConfiguredModels?.claude, 'claude-opus')
+
+    scanner.setDisabledAgents(['claude'])
+    assert.equal(scanner.getSessions().length, 0)
+    assert.equal(scanner.scan({ forceFullDiscovery: true }).length, 0)
+  } finally {
+    if (priorClaudeHome === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = priorClaudeHome
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
