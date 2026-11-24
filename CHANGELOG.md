@@ -2,6 +2,12 @@
 
 All notable changes to Token Pulse are documented in this file.
 
+## [0.2.3] - 2026-11-24
+
+### Added
+
+- **Per-agent tracking switches**: Added per-agent toggles (`enableClaude`, `enableCodex`, `enableAntigravity`, `enableGemini`, all on by default) in Orca plugin settings to stop reading transcripts and settings, clear cached sessions and quota data, hide disabled agents across Live, Sessions, Stats, Quotas, and open detail views, and skip `orca account list --json` when all quota providers are off (#6, @hanyscz).
+
 ## [0.2.2] - 2026-11-24
 
 ### Added
