@@ -2,6 +2,16 @@
 
 All notable changes to Token Pulse are documented in this file.
 
+## [0.2.2] - 2026-11-24
+
+### Added
+
+- **Background command strip & I/O detail task list**: Added a compact single-line background command strip (`>_` command label, `+N` badge, hover list, and 1s live elapsed timer) on Live cards and a full background task list in the Live I/O detail view across all 6 locales (#7).
+
+### Fixed
+
+- **Antigravity background task working state**: Kept Antigravity sessions in `working` while asynchronous background tasks (`GENERIC RUNNING`) are active instead of prematurely marking them `done` after `PLANNER_RESPONSE` or 45s of inactivity (#7).
+
 ## [0.2.1] - 2026-11-23
 
 ### Added

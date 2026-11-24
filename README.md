@@ -20,6 +20,7 @@ The plugin uses Orca's `trusted-worker` profile. Orca will show the requested ac
 - Session, day, week, and month token summaries with **Agent**, **Model**, and **Project** breakdowns, plus today's cumulative cost in the live dashboard.
 - Inline **Cache hit rate** (`Cache XX%`, highlighted below 50%) across Live cards, Live I/O detail, Sessions history, and Stats summaries.
 - Claude Code, Codex, Gemini CLI, and Antigravity transcript parsing with provider logos and reasoning effort badges.
+- Antigravity background task tracking: Live cards keep sessions `working` while background tasks run and display a compact command strip with live elapsed time, with the full task list in the I/O detail view.
 - Nested subagent cards under parent sessions with parent status elevation while child subagents are active, unified status groups, and flattened worktree session history.
 - Orca agent and terminal titles from the host API, with click-to-focus navigation for linked terminals.
 - Current model labels and provider-aware USD estimates, with one-click pricing sync in the footer.
