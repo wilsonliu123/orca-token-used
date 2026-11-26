@@ -2,6 +2,12 @@
 
 All notable changes to Token Pulse are documented in this file.
 
+## [0.2.4] - 2026-11-26
+
+### Fixed
+
+- **Stuck `working` session silence timeout**: Added a conservative 5-minute silence timeout guard in `resolveSessionRunState` so interrupted sessions (such as Codex sessions stopped mid-turn without writing `turn_aborted`/`task_complete` while Orca Host still reports `working`) downgrade to `done` after 5 minutes of transcript and state inactivity, without affecting active background tasks, `waiting` prompts, active child subagent elevation, or sessions without transcript timestamps yet (#10).
+
 ## [0.2.3] - 2026-11-24
 
 ### Added

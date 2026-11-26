@@ -4,7 +4,7 @@
   "execution": "trusted-worker",
   "id": "token-pulse",
   "name": "Token Pulse",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Real-time token usage, generation TPS, live model cost, and 5h/weekly quota gauges across Claude Code, Codex, Gemini, and Antigravity. Reads local agent transcripts and Orca metadata; sends only public pricing requests.",
   "author": {
     "name": "Wilson Liu",
