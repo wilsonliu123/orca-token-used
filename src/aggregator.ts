@@ -961,6 +961,7 @@ export const LIVE_SERIES_SECONDS = 60
 const LIVE_RATE_WINDOW_SECONDS = 8
 const LIVE_RECENT_MS = 15 * 60_000
 const BACKGROUND_TASK_ORPHAN_MAX_AGE_MS = 30 * 60_000
+const STALE_WORKING_SILENCE_TIMEOUT_MS = 5 * 60_000
 
 export function getActiveBackgroundTasks(
   st: SessionTranscriptState,
@@ -1016,7 +1017,20 @@ export function resolveSessionRunState(
     ) {
       return 'done'
     }
-    return st.lastEventState === 'waiting' ? 'waiting' : 'working'
+    if (st.lastEventState === 'waiting') {
+      return 'waiting'
+    }
+    // Conservative 5-minute silence guard for stuck ptyState=working (e.g. a session interrupted
+    // mid-turn before writing a terminal transcript event such as turn_aborted / task_complete).
+    if (
+      !hasActiveBgTasks &&
+      lastTouchMs > 0 &&
+      now - lastTouchMs > STALE_WORKING_SILENCE_TIMEOUT_MS &&
+      (ptyStateStartedAt <= 0 || now - ptyStateStartedAt > STALE_WORKING_SILENCE_TIMEOUT_MS)
+    ) {
+      return 'done'
+    }
+    return 'working'
   }
   if (
     st.lastEventState === 'waiting' &&
