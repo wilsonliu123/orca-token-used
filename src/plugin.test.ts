@@ -5103,3 +5103,126 @@ describe('Per-agent tracking switches: aggregator', () => {
     assert.deepEqual(filtered.liveAgents.map((a) => a.terminalId), ['pty-codex'])
   })
 })
+
+describe('Stale ptyState=working 5-minute silence timeout guard', () => {
+  const FIVE_MIN_MS = 5 * 60_000
+  const now = 1_800_000_000_000
+
+  function makeWorkingSession(id: string, touchMs: number, lastEventState: 'working' | 'waiting' | 'done' | null = 'working') {
+    const st = createEmptySessionState(id, 'codex', `/tmp/${id}.jsonl`)
+    st.updatedAtMs = touchMs
+    st.lastMtimeMs = touchMs
+    st.lastEventState = lastEventState
+    return st
+  }
+
+  test('downgrades stuck ptyState=working to done after >5m silence (with stale or unset ptyStateStartedAt)', () => {
+    const st = makeWorkingSession('codex-interrupted', now - FIVE_MIN_MS - 1, 'working')
+    assert.equal(resolveSessionRunState(st, 'working', now, now - FIVE_MIN_MS - 1), 'done')
+    assert.equal(resolveSessionRunState(st, 'working', now, 0), 'done')
+  })
+
+  test('keeps working within 5m of last transcript touch (including exact 5m boundary) even if ptyStateStartedAt > 5m', () => {
+    const stExact = makeWorkingSession('codex-boundary', now - FIVE_MIN_MS, 'working')
+    assert.equal(resolveSessionRunState(stExact, 'working', now, now - 10 * 60_000), 'working')
+
+    const stRecent = makeWorkingSession('codex-active-long-turn', now - 2 * 60_000, 'working')
+    assert.equal(resolveSessionRunState(stRecent, 'working', now, now - 10 * 60_000), 'working')
+  })
+
+  test('keeps working when lastTouchMs > 5m old but ptyStateStartedAt is within 5m (newly started turn before flush)', () => {
+    const st = makeWorkingSession('codex-new-turn', now - 10 * 60_000, 'working')
+    assert.equal(resolveSessionRunState(st, 'working', now, now - 30_000), 'working')
+    assert.equal(resolveSessionRunState(st, 'working', now, now - FIVE_MIN_MS), 'working')
+  })
+
+  test('keeps working past 5m silence when active background tasks are present', () => {
+    const st = makeWorkingSession('codex-bg', now - 10 * 60_000, 'working')
+    st.activeBackgroundTasks = new Map([
+      ['bg-1', { id: 'bg-1', label: 'pnpm test', startedAt: now - 10 * 60_000 }]
+    ])
+    assert.equal(resolveSessionRunState(st, 'working', now, now - 10 * 60_000), 'working')
+  })
+
+  test('keeps working when lastTouchMs === 0 (no transcript timestamps yet)', () => {
+    const st = makeWorkingSession('codex-no-transcript', 0, null)
+    assert.equal(resolveSessionRunState(st, 'working', now, now - 10 * 60_000), 'working')
+    assert.equal(resolveSessionRunState(st, 'working', now, 0), 'working')
+  })
+
+  test('preserves waiting state, 45s done fast-close, and active child subagent elevation', () => {
+    // 1) Interactive question waiting (>5m) stays waiting rather than closing as done
+    const stWaiting = makeWorkingSession('codex-waiting', now - 10 * 60_000, 'waiting')
+    assert.equal(resolveSessionRunState(stWaiting, 'working', now, now - 10 * 60_000), 'waiting')
+
+    // 2) Existing 45s fast-close for explicit lastEventState === 'done' still triggers at 46s
+    const stDone = makeWorkingSession('codex-done-46s', now - 46_000, 'done')
+    assert.equal(resolveSessionRunState(stDone, 'working', now, now - 60_000), 'done')
+
+    // 3) Parent silent >5m with stuck ptyState=working still elevates to waiting when a child subagent is active
+    const wtPath = '/tmp/test-stale-parent-subagent'
+    const parent = makeWorkingSession('parent-stale', now - 10 * 60_000, 'working')
+    parent.cwd = wtPath
+    parent.createdAtMs = now - 15 * 60_000
+    parent.turnsByKey.set('t1', {
+      turnKey: 't1',
+      timestampMs: now - 10 * 60_000,
+      input: 400,
+      output: 100,
+      reasoning: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      total: 500,
+      durationSec: 2,
+      tps: 50,
+      model: 'gpt-6.1-sol',
+      explicitCostUsd: null
+    })
+
+    const child = makeWorkingSession('child-active', now - 2_000, 'working')
+    child.cwd = wtPath
+    child.createdAtMs = now - 30_000
+    child.isSubagent = true
+    child.parentSessionId = 'parent-stale'
+    child.turnsByKey.set('t1', {
+      turnKey: 't1',
+      timestampMs: now - 2_000,
+      input: 200,
+      output: 50,
+      reasoning: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      total: 250,
+      durationSec: 1,
+      tps: 50,
+      model: 'gpt-6.1-sol',
+      explicitCostUsd: null
+    })
+
+    const runtime = {
+      focusedName: 'main',
+      focusedBranch: 'main',
+      focusedPath: wtPath,
+      liveAgents: [
+        {
+          terminalId: 'term-parent-stale',
+          sessionId: 'parent-stale',
+          title: 'codex',
+          agent: 'codex',
+          state: 'working' as const,
+          stateStartedAt: now - 10 * 60_000,
+          workspacePath: wtPath
+        }
+      ]
+    }
+    const journal = createTestJournalIndex()
+    const pricing = new PricingEngine()
+
+    const snap = buildDashboardSnapshot([parent, child], journal, pricing, runtime, now)
+    const parentCard = snap.live.agents.find((c) => c.sessionKey === 'codex:parent-stale')
+    assert.equal(parentCard?.state, 'waiting')
+
+    const polled = pollSingleLiveAgent('codex:parent-stale', [parent, child], journal, pricing, runtime, now)
+    assert.equal(polled?.state, 'waiting')
+  })
+})
