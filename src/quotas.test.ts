@@ -238,6 +238,7 @@ describe('Quotas payload parser, local rolling usage, and QuotaEngine', () => {
 
     assert.equal(antigravity.provider, 'antigravity')
     assert.equal(antigravity.status, 'ok')
+    assert.equal(antigravity.officialQuotaAvailable, true)
     assert.equal(antigravity.accountEmail, 'victor@example.com')
     assert.equal(antigravity.authKind, 'consumer')
     assert.equal(antigravity.pools.length, 2)
@@ -255,6 +256,32 @@ describe('Quotas payload parser, local rolling usage, and QuotaEngine', () => {
     assert.equal(claude.error, 'No subscription plan — API key billing')
     assert.equal(claude.session, null)
     assert.equal(claude.weekly, null)
+  })
+
+  test('marks Orca hosts without Antigravity official quota as local-only while preserving saved accounts', () => {
+    const providers = parseOrcaAccountListPayload({
+      ok: true,
+      result: {
+        antigravity: {
+          accounts: [
+            { id: 'ag-1', email: 'active@example.com', authMethod: 'consumer' },
+            { id: 'ag-2', email: 'backup@example.com', authMethod: 'consumer' }
+          ],
+          activeAccountId: 'ag-1'
+        },
+        rateLimits: {
+          antigravityAccounts: []
+        }
+      }
+    })
+    const antigravity = providers.find((provider) => provider.provider === 'antigravity')
+    assert.ok(antigravity)
+    assert.equal(antigravity.officialQuotaAvailable, false)
+    assert.equal(antigravity.status, 'unavailable')
+    assert.deepEqual(antigravity.accounts.map((account) => [account.email, account.active]), [
+      ['active@example.com', true],
+      ['backup@example.com', false]
+    ])
   })
 
   test('normalizes 10-digit epoch seconds to ms for resetsAt and nextExpiresAt while preserving ms', () => {

@@ -1301,8 +1301,15 @@ function renderQuotaProviderCard(
   nowMs: number,
   collapsedGroups: CollapsedGroups
 ): string {
+  const localOnly =
+    p.provider === 'antigravity' &&
+    p.officialQuotaAvailable === false &&
+    !p.error &&
+    (p.accounts.length > 0 || p.local.window5h.totalTokens > 0 || p.local.window7d.totalTokens > 0)
   const statusLabel =
-    p.status === 'ok'
+    localOnly
+      ? msg.quotaLocalOnlyLabel
+      : p.status === 'ok'
       ? msg.quotaStatusOk
       : p.status === 'loading'
         ? msg.quotaSourceLoading
@@ -1318,7 +1325,12 @@ function renderQuotaProviderCard(
     : ''
 
   let bodyHtml = ''
-  if (p.pools.length > 0) {
+  if (localOnly) {
+    bodyHtml = `
+      <div class="tp-quota-reason-banner">${escapeHtml(msg.quotaLocalOnlyHint)}</div>
+      ${renderLocalUsageTiles(p.local, msg)}
+    `
+  } else if (p.pools.length > 0) {
     bodyHtml = `
       ${p.pools.map((pool) => renderQuotaPoolSection(pool, msg, nowMs)).join('')}
       ${renderLocalUsageCompactStrip(p.local, msg)}
@@ -1362,14 +1374,14 @@ function renderQuotaProviderCard(
     const rows = p.accounts
       .map((acc) => {
         const name = acc.email || acc.label || acc.id || acc.authKind || 'account'
-        const summary = formatAccountMiniSummary(acc, msg)
+        const summary = localOnly ? '' : formatAccountMiniSummary(acc, msg)
         return `
           <div class="tp-quota-account-row">
             <div class="tp-quota-account-hdr">
               <span class="tp-quota-account-email" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
               ${acc.active ? `<span class="tp-quota-account-active">${escapeHtml(msg.quotaActiveAccountBadge)}</span>` : ''}
             </div>
-            <div class="tp-quota-account-summary" title="${escapeHtml(summary)}">${escapeHtml(summary)}</div>
+            ${summary ? `<div class="tp-quota-account-summary" title="${escapeHtml(summary)}">${escapeHtml(summary)}</div>` : ''}
           </div>
         `
       })

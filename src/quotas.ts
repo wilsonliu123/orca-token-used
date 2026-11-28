@@ -355,6 +355,11 @@ function buildAntigravitySnapshot(result: Record<string, unknown>): QuotaProvide
   const poolsFromLimits = parsePoolsFromBuckets(agLimits?.buckets)
   const pools =
     poolsFromLimits.length > 0 ? poolsFromLimits : (activeAccount?.pools ?? [])
+  const officialQuotaAvailable = Boolean(
+    session || weekly || poolsFromLimits.length > 0 ||
+      rateLimitAccounts.some((account) => account.session || account.weekly || account.pools.length > 0) ||
+      sectionAccounts.some((account) => account.session || account.weekly || account.pools.length > 0)
+  )
   const error = asString(agLimits?.error) ?? activeAccount?.error ?? null
   const status = normalizeStatus(agLimits?.status ?? activeAccount?.status, session, weekly, pools, error)
   const updatedAt = asFiniteNumber(agLimits?.updatedAt)
@@ -383,6 +388,7 @@ function buildAntigravitySnapshot(result: Record<string, unknown>): QuotaProvide
     resetCredits: null,
     accounts,
     updatedAt,
+    officialQuotaAvailable,
     local: {
       window5h: emptyLocalQuotaUsageWindow(),
       window7d: emptyLocalQuotaUsageWindow()
@@ -647,6 +653,8 @@ export class QuotaEngine {
         resetCredits: parseResetCredits(rec.resetCredits),
         accounts: sanitizeCachedAccounts(rec.accounts),
         updatedAt: asFiniteNumber(rec.updatedAt),
+        officialQuotaAvailable:
+          rec.officialQuotaAvailable === false ? false : rec.officialQuotaAvailable === true ? true : undefined,
         local: {
           window5h: emptyLocalQuotaUsageWindow(),
           window7d: emptyLocalQuotaUsageWindow()

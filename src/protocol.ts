@@ -224,6 +224,8 @@ export interface QuotaProviderSnapshot {
   resetCredits: QuotaResetCredits | null
   accounts: QuotaAccountSummary[]
   updatedAt: number | null
+  /** Whether Orca supplied official quota windows or model pools for this provider. */
+  officialQuotaAvailable?: boolean
   local: {
     window5h: LocalQuotaUsageWindow
     window7d: LocalQuotaUsageWindow
