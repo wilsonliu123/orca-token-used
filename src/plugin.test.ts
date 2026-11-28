@@ -2630,6 +2630,46 @@ describe('Quotas & Limits Tab UI Rendering (renderDashboardShellHtml)', () => {
     assert.ok(html.includes(getMessages('en').quotaActiveAccountBadge))
   })
 
+  test('renders Antigravity local-only state without unavailable account noise', () => {
+    const now = Date.UTC(2026, 10, 17, 12, 0, 0)
+    const snap = createQuotaTestSnapshot({
+      source: 'live',
+      syncedAt: now,
+      refreshing: false,
+      lastError: null,
+      providers: [
+        createProviderSnapshot('antigravity', {
+          status: 'unavailable',
+          officialQuotaAvailable: false,
+          accounts: [
+            {
+              id: 'ag-1', email: 'active@example.com', label: null, authKind: 'consumer', active: true,
+              status: 'unavailable', session: null, weekly: null, pools: [], error: null
+            },
+            {
+              id: 'ag-2', email: 'backup@example.com', label: null, authKind: 'consumer', active: false,
+              status: 'unavailable', session: null, weekly: null, pools: [], error: null
+            }
+          ],
+          local: {
+            window5h: emptyLocalWindow({ totalTokens: 1200, turnCount: 2 }),
+            window7d: emptyLocalWindow({ totalTokens: 3400, turnCount: 5 })
+          }
+        })
+      ]
+    }, now)
+
+    const html = renderDashboardShellHtml({ snap, tab: 'quotas', scope: 'all', locale: 'en', collapsedGroups: { 'quotas:accounts:antigravity': false }, nowMs: now })
+    assert.ok(html.includes('Local only'))
+    assert.ok(html.includes('Orca disables Antigravity official quota reads'))
+    assert.ok(html.includes('Local 5h'))
+    assert.ok(html.includes('Local 7d'))
+    assert.ok(!html.includes('Official quota unavailable'))
+    assert.ok(!html.includes('>unavailable</div>'))
+    assert.ok(html.includes('active@example.com'))
+    assert.ok(html.includes(getMessages('en').quotaActiveAccountBadge))
+  })
+
   test('renders Claude unavailable and error states with reason banner and local rolling 5h & 7d token/cost tiles', () => {
     const now = Date.UTC(2026, 10, 17, 12, 0, 0)
     const snap = createQuotaTestSnapshot(

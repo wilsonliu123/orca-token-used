@@ -73,6 +73,8 @@ export interface UiMessages {
   quotaTurnsShort: (count: number) => string
   quotaRateLimitsShort: (count: number) => string
   quotaUnavailableLabel: string
+  quotaLocalOnlyLabel: string
+  quotaLocalOnlyHint: string
   quotaErrorLabel: string
   quotaLoadingLabel: string
   quotaSourceOff: string
@@ -187,6 +189,8 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     quotaTurnsShort: (count) => `${count} 輪`,
     quotaRateLimitsShort: (count) => `${count} × 429`,
     quotaUnavailableLabel: '官方方案額度不可用',
+    quotaLocalOnlyLabel: '僅本機',
+    quotaLocalOnlyHint: 'Orca 已停用 Antigravity 官方額度讀取，以保護帳號安全。',
     quotaErrorLabel: '額度讀取失敗',
     quotaLoadingLabel: '正在取得即時額度…',
     quotaSourceOff: '額度追蹤已關閉',
@@ -309,6 +313,8 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     quotaTurnsShort: (count) => `${count} 轮`,
     quotaRateLimitsShort: (count) => `${count} × 429`,
     quotaUnavailableLabel: '官方方案额度不可用',
+    quotaLocalOnlyLabel: '仅本机',
+    quotaLocalOnlyHint: 'Orca 已停用 Antigravity 官方额度读取，以保护账号安全。',
     quotaErrorLabel: '额度读取失败',
     quotaLoadingLabel: '正在获取实时额度…',
     quotaSourceOff: '额度跟踪已关闭',
@@ -431,6 +437,8 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     quotaTurnsShort: (count) => `${count} turns`,
     quotaRateLimitsShort: (count) => `${count} × 429`,
     quotaUnavailableLabel: 'Official quota unavailable',
+    quotaLocalOnlyLabel: 'Local only',
+    quotaLocalOnlyHint: 'Orca disables Antigravity official quota reads to help keep your account safe.',
     quotaErrorLabel: 'Quota check failed',
     quotaLoadingLabel: 'Checking provider quotas…',
     quotaSourceOff: 'Quota tracking is off',
@@ -553,6 +561,8 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     quotaTurnsShort: (count) => `${count} 回`,
     quotaRateLimitsShort: (count) => `${count} × 429`,
     quotaUnavailableLabel: '公式クォータ利用不可',
+    quotaLocalOnlyLabel: 'ローカルのみ',
+    quotaLocalOnlyHint: 'アカウント保護のため、Orca は Antigravity の公式クォータ取得を無効にしています。',
     quotaErrorLabel: 'クォータ取得エラー',
     quotaLoadingLabel: 'クォータを取得中…',
     quotaSourceOff: 'クォータの追跡はオフです',
@@ -675,6 +685,8 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     quotaTurnsShort: (count) => `${count} 턴`,
     quotaRateLimitsShort: (count) => `${count} × 429`,
     quotaUnavailableLabel: '공식 할당량 사용 불가',
+    quotaLocalOnlyLabel: '로컬만',
+    quotaLocalOnlyHint: '계정 보호를 위해 Orca가 Antigravity 공식 할당량 조회를 비활성화했습니다.',
     quotaErrorLabel: '할당량 조회 오류',
     quotaLoadingLabel: '할당량 확인 중…',
     quotaSourceOff: '할당량 추적이 꺼져 있습니다',
@@ -797,6 +809,8 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     quotaTurnsShort: (count) => `${count} kol`,
     quotaRateLimitsShort: (count) => `${count} × 429`,
     quotaUnavailableLabel: 'Oficiální kvóta není dostupná',
+    quotaLocalOnlyLabel: 'Pouze lokálně',
+    quotaLocalOnlyHint: 'Orca vypíná načítání oficiální kvóty Antigravity kvůli ochraně účtu.',
     quotaErrorLabel: 'Kontrola kvóty selhala',
     quotaLoadingLabel: 'Zjišťuji kvóty poskytovatelů…',
     quotaSourceOff: 'Sledování kvót je vypnuto',
