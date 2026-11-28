@@ -2,6 +2,12 @@
 
 All notable changes to Token Pulse are documented in this file.
 
+## [0.2.5] - 2026-11-28
+
+### Fixed
+
+- **Antigravity local-only Quotas UI**: Added `officialQuotaAvailable` tracking on `QuotaProviderSnapshot` (preserving cached state across reloads) so Antigravity renders a `Local only` status badge, account-safety hint banner, full 5h/7d local usage tiles, and account list without redundant empty pool summaries when official Antigravity quota pools are unavailable, localized across all 6 locales (`zh-TW`, `zh-CN`, `en`, `ja`, `ko`, `cs`) (#12).
+
 ## [0.2.4] - 2026-11-26
 
 ### Fixed
