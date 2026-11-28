@@ -1252,6 +1252,206 @@ function renderLocalUsageCompactStrip(
   `
 }
 
+function formatLocalClockHm(ms: number): string {
+  const d = new Date(ms)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
+function synthesizeEmptyActivity5h(nowMs: number): Array<{ startMs: number; totalTokens: number; costUsd: number; turnCount: number }> {
+  const start = nowMs - 5 * 3600_000
+  return Array.from({ length: 10 }, (_, i) => ({
+    startMs: start + i * 30 * 60_000,
+    totalTokens: 0,
+    costUsd: 0,
+    turnCount: 0
+  }))
+}
+
+function synthesizeEmptyDaily7d(nowMs: number): Array<{ dayKey: string; totalTokens: number; costUsd: number; turnCount: number; isToday: boolean }> {
+  const today = new Date(nowMs)
+  today.setHours(0, 0, 0, 0)
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(today)
+    d.setDate(d.getDate() - (6 - i))
+    const mm = String(d.getMonth() + 1).padStart(2, '0')
+    const dd = String(d.getDate()).padStart(2, '0')
+    return {
+      dayKey: `${d.getFullYear()}-${mm}-${dd}`,
+      totalTokens: 0,
+      costUsd: 0,
+      turnCount: 0,
+      isToday: i === 6
+    }
+  })
+}
+
+function safeNonNegative(value: number | null | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+}
+
+function renderLocalSparkbarsSvg(
+  bars: Array<{ value: number; tooltip: string; isCurrent: boolean }>,
+  ariaLabel: string
+): string {
+  const width = 160
+  const baselineY = 53
+  const plotHeight = 48
+  const gap = 3
+  const count = Math.max(1, bars.length)
+  const barWidth = Math.max(2, (width - gap * Math.max(0, count - 1)) / count)
+  const maxVal = bars.reduce((max, item) => Math.max(max, safeNonNegative(item.value)), 0)
+
+  const rects = bars
+    .map((item, i) => {
+      const value = safeNonNegative(item.value)
+      const x = i * (barWidth + gap)
+      let barHeight: number
+      let cls: string
+      if (maxVal > 0 && value > 0) {
+        barHeight = Math.max(4, Math.min(plotHeight, (value / maxVal) * plotHeight))
+        cls = item.isCurrent ? 'tp-quota-bar-current' : 'tp-quota-bar-fill'
+      } else {
+        barHeight = 2
+        cls = item.isCurrent ? 'tp-quota-bar-empty-current' : 'tp-quota-bar-empty'
+      }
+      const y = baselineY - 1 - barHeight
+      return `<rect class="${cls}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barWidth.toFixed(1)}" height="${barHeight.toFixed(1)}" rx="2"><title>${escapeHtml(item.tooltip)}</title></rect>`
+    })
+    .join('')
+
+  return `
+    <svg class="tp-quota-local-chart" viewBox="0 0 ${width} 56" role="img" aria-label="${escapeHtml(ariaLabel)}">
+      <line x1="0" y1="${baselineY}" x2="${width}" y2="${baselineY}" class="tp-quota-chart-baseline" />
+      <g>${rects}</g>
+    </svg>
+  `
+}
+
+function renderLocalOnlyVisuals(
+  local: QuotaProviderSnapshot['local'],
+  msg: UiMessages,
+  nowMs: number
+): string {
+  const activity = local.activity5h && local.activity5h.length > 0 ? local.activity5h : synthesizeEmptyActivity5h(nowMs)
+  const daily = local.daily7d && local.daily7d.length > 0 ? local.daily7d : synthesizeEmptyDaily7d(nowMs)
+  const mix = (local.modelMix7d ?? []).filter((item) => safeNonNegative(item.totalTokens) > 0 && safeNonNegative(item.pct) > 0)
+
+  const activityBars = activity.map((item, i) => {
+    const startMs = Number.isFinite(item.startMs) ? item.startMs : nowMs - (activity.length - i) * 30 * 60_000
+    const rangeLabel = `${formatLocalClockHm(startMs)}–${formatLocalClockHm(startMs + 30 * 60_000)}`
+    const tokens = safeNonNegative(item.totalTokens)
+    const cost = safeNonNegative(item.costUsd)
+    const turns = Math.round(safeNonNegative(item.turnCount))
+    return {
+      value: tokens,
+      isCurrent: i === activity.length - 1,
+      tooltip: `${rangeLabel}: ${formatTokens(tokens)} tok · ${formatUsd(cost)} · ${msg.quotaTurnsShort(turns)}`
+    }
+  })
+
+  const dailyBars = daily.map((item, i) => {
+    const tokens = safeNonNegative(item.totalTokens)
+    const cost = safeNonNegative(item.costUsd)
+    const turns = Math.round(safeNonNegative(item.turnCount))
+    return {
+      value: tokens,
+      isCurrent: item.isToday || i === daily.length - 1,
+      tooltip: `${item.dayKey}: ${formatTokens(tokens)} tok · ${formatUsd(cost)} · ${msg.quotaTurnsShort(turns)}`
+    }
+  })
+
+  const activityTotal = safeNonNegative(local.window5h.totalTokens)
+  const dailyTotal = safeNonNegative(local.window7d.totalTokens)
+  const hits5h = safeNonNegative(local.window5h.rateLimitHits)
+  const hits5hHtml =
+    hits5h > 0
+      ? `<span class="tp-quota-429-badge">${escapeHtml(msg.quotaRateLimitsShort(Math.round(hits5h)))}</span>`
+      : ''
+
+  const formatAxisDay = (dayKey: string | undefined): string =>
+    dayKey && dayKey.length >= 10 ? dayKey.slice(5, 10).replace('-', '/') : ''
+  const midDailyIdx = Math.floor(daily.length / 2)
+  const dailyAvgHtml =
+    dailyTotal > 0
+      ? `<span class="tp-quota-local-sub">${escapeHtml(msg.quotaDailyAvg(formatTokens(Math.round(dailyTotal / 7))))}</span>`
+      : ''
+
+  let mixSectionHtml = ''
+  if (mix.length > 0) {
+    const cacheHitHtml =
+      typeof local.cacheHitRate7d === 'number' && Number.isFinite(local.cacheHitRate7d)
+        ? `<span class="tp-quota-cache-pill">${escapeHtml(msg.quotaCacheHitRate(Math.max(0, Math.min(100, Math.round(local.cacheHitRate7d)))))}</span>`
+        : ''
+    const segmentsHtml = mix
+      .map((item, i) => {
+        const pct = Math.max(0, Math.min(100, Math.round(safeNonNegative(item.pct))))
+        const label = item.isOther ? msg.quotaModelOtherLabel : item.model
+        const tooltip = `${label}: ${pct}% (${formatTokens(safeNonNegative(item.totalTokens))} tok)`
+        return `<span class="tp-quota-mix-seg" style="width:${pct}%;background:var(--tp-mix-${i % 4})" title="${escapeHtml(tooltip)}"></span>`
+      })
+      .join('')
+    const legendHtml = mix
+      .map((item, i) => {
+        const pct = Math.max(0, Math.min(100, Math.round(safeNonNegative(item.pct))))
+        const label = item.isOther ? msg.quotaModelOtherLabel : item.model
+        const tooltip = `${label}: ${pct}% (${formatTokens(safeNonNegative(item.totalTokens))} tok)`
+        return `<span class="tp-quota-mix-item" title="${escapeHtml(tooltip)}"><i class="tp-quota-mix-dot" style="background:var(--tp-mix-${i % 4})"></i><span class="tp-quota-mix-name">${escapeHtml(label)}</span><span class="tp-quota-mix-pct">${pct}%</span></span>`
+      })
+      .join('')
+
+    mixSectionHtml = `
+      <div class="tp-quota-model-mix">
+        <div class="tp-quota-local-visual-head">
+          <span>${escapeHtml(msg.quotaModelMix7dLabel)}</span>
+          ${cacheHitHtml}
+        </div>
+        <div class="tp-quota-mix-bar">${segmentsHtml}</div>
+        <div class="tp-quota-mix-legend">${legendHtml}</div>
+      </div>
+    `
+  }
+
+  return `
+    <div class="tp-quota-local-visual-grid">
+      <div class="tp-quota-local-visual-tile">
+        <div class="tp-quota-local-visual-head">
+          <span>${escapeHtml(msg.quotaActivity5hLabel)}</span>
+          <span class="tp-quota-local-sub">${escapeHtml(msg.quotaBarInterval)}</span>
+        </div>
+        <div class="tp-quota-local-val">${formatTokens(activityTotal)} tok</div>
+        ${renderLocalSparkbarsSvg(activityBars, msg.quotaActivity5hLabel)}
+        <div class="tp-quota-chart-axis">
+          <span>-5h</span>
+          <span>-2.5h</span>
+          <span>now</span>
+        </div>
+        <div class="tp-quota-local-meta">
+          <span class="tp-cost-pill">${formatUsd(safeNonNegative(local.window5h.costUsd))}</span>
+          <span class="tp-quota-local-turns">${escapeHtml(msg.quotaTurnsShort(Math.round(safeNonNegative(local.window5h.turnCount))))}${hits5hHtml}</span>
+        </div>
+      </div>
+      <div class="tp-quota-local-visual-tile">
+        <div class="tp-quota-local-visual-head">
+          <span>${escapeHtml(msg.quotaDaily7dLabel)}</span>
+          ${dailyAvgHtml}
+        </div>
+        <div class="tp-quota-local-val">${formatTokens(dailyTotal)} tok</div>
+        ${renderLocalSparkbarsSvg(dailyBars, msg.quotaDaily7dLabel)}
+        <div class="tp-quota-chart-axis">
+          <span>${escapeHtml(formatAxisDay(daily[0]?.dayKey))}</span>
+          <span>${escapeHtml(formatAxisDay(daily[midDailyIdx]?.dayKey))}</span>
+          <span>${escapeHtml(msg.quotaTodayLabel)}</span>
+        </div>
+        <div class="tp-quota-local-meta">
+          <span class="tp-cost-pill">${formatUsd(safeNonNegative(local.window7d.costUsd))}</span>
+          <span class="tp-quota-local-turns">${escapeHtml(msg.quotaTurnsShort(Math.round(safeNonNegative(local.window7d.turnCount))))}</span>
+        </div>
+      </div>
+    </div>
+    ${mixSectionHtml}
+  `
+}
+
 function renderQuotaPoolSection(
   pool: QuotaPool,
   msg: UiMessages,
@@ -1304,8 +1504,9 @@ function renderQuotaProviderCard(
   const localOnly =
     p.provider === 'antigravity' &&
     p.officialQuotaAvailable === false &&
-    !p.error &&
-    (p.accounts.length > 0 || p.local.window5h.totalTokens > 0 || p.local.window7d.totalTokens > 0)
+    p.status !== 'loading' &&
+    p.status !== 'error' &&
+    !p.error
   const statusLabel =
     localOnly
       ? msg.quotaLocalOnlyLabel
@@ -1327,8 +1528,7 @@ function renderQuotaProviderCard(
   let bodyHtml = ''
   if (localOnly) {
     bodyHtml = `
-      <div class="tp-quota-reason-banner">${escapeHtml(msg.quotaLocalOnlyHint)}</div>
-      ${renderLocalUsageTiles(p.local, msg)}
+      ${renderLocalOnlyVisuals(p.local, msg, nowMs)}
     `
   } else if (p.pools.length > 0) {
     bodyHtml = `
@@ -1395,6 +1595,10 @@ function renderQuotaProviderCard(
     )
   }
 
+  const statusPillHtml = localOnly
+    ? `<span class="tp-quota-status-pill tp-quota-status-local-only tp-quota-local-only-pill" tabindex="0" title="${escapeHtml(msg.quotaLocalOnlyHint)}" data-tooltip="${escapeHtml(msg.quotaLocalOnlyHint)}" aria-label="${escapeHtml(`${statusLabel}: ${msg.quotaLocalOnlyHint}`)}"><i class="tp-dot" aria-hidden="true"></i>${escapeHtml(statusLabel)}</span>`
+    : `<span class="tp-quota-status-pill tp-quota-status-${escapeHtml(p.status)}">${escapeHtml(statusLabel)}</span>`
+
   return `
     <section class="tp-quota-card" aria-label="${escapeHtml(p.label)}">
       <div class="tp-quota-card-hdr">
@@ -1408,7 +1612,7 @@ function renderQuotaProviderCard(
             ${emailRow}
           </div>
         </div>
-        <span class="tp-quota-status-pill tp-quota-status-${escapeHtml(p.status)}">${escapeHtml(statusLabel)}</span>
+        ${statusPillHtml}
       </div>
       ${bodyHtml}
       ${accountsHtml}

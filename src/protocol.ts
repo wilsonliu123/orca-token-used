@@ -211,6 +211,28 @@ export interface LocalQuotaUsageWindow {
   rateLimitHits: number | null
 }
 
+export interface LocalActivityBucket {
+  startMs: number
+  totalTokens: number
+  costUsd: number
+  turnCount: number
+}
+
+export interface LocalDailyBucket {
+  dayKey: string
+  totalTokens: number
+  costUsd: number
+  turnCount: number
+  isToday: boolean
+}
+
+export interface LocalModelMixEntry {
+  model: string
+  totalTokens: number
+  pct: number
+  isOther?: boolean
+}
+
 export interface QuotaProviderSnapshot {
   provider: QuotaProviderKind
   label: string
@@ -229,6 +251,10 @@ export interface QuotaProviderSnapshot {
   local: {
     window5h: LocalQuotaUsageWindow
     window7d: LocalQuotaUsageWindow
+    activity5h?: LocalActivityBucket[]
+    daily7d?: LocalDailyBucket[]
+    modelMix7d?: LocalModelMixEntry[]
+    cacheHitRate7d?: number | null
   }
 }
 

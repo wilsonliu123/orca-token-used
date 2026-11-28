@@ -2,6 +2,9 @@ import { runOrcaJson } from './orca-cli'
 import type { SessionTranscriptState } from './parsers'
 import type { PricingEngine } from './pricing'
 import type {
+  LocalActivityBucket,
+  LocalDailyBucket,
+  LocalModelMixEntry,
   LocalQuotaUsageWindow,
   QuotaAccountSummary,
   QuotaPool,
@@ -13,12 +16,24 @@ import type {
   QuotaWindow
 } from './protocol'
 
+type LocalUsageByProvider = {
+  window5h: LocalQuotaUsageWindow
+  window7d: LocalQuotaUsageWindow
+  activity5h: LocalActivityBucket[]
+  daily7d: LocalDailyBucket[]
+  modelMix7d: LocalModelMixEntry[]
+  cacheHitRate7d: number | null
+}
+
 export const QUOTAS_STORAGE_KEY = 'quotasCache.v1'
 export const DEFAULT_QUOTA_TTL_MS = 5 * 60_000
 export const DEFAULT_QUOTA_TIMEOUT_MS = 15_000
 
 const FIVE_HOURS_MS = 5 * 3600_000
+const THIRTY_MINUTES_MS = 30 * 60_000
+const ACTIVITY_5H_BUCKETS = 10
 const SEVEN_DAYS_MS = 7 * 86400_000
+const DAILY_7D_BUCKETS = 7
 
 export const QUOTA_PROVIDERS: readonly QuotaProviderKind[] = ['codex', 'antigravity', 'claude']
 
@@ -89,17 +104,51 @@ export function emptyLocalQuotaUsageWindow(): LocalQuotaUsageWindow {
   }
 }
 
-export function emptyLocalUsageByProvider(): Record<
-  QuotaProviderKind,
-  { window5h: LocalQuotaUsageWindow; window7d: LocalQuotaUsageWindow }
-> {
+function formatLocalDayKey(date: Date): string {
+  const mm = String(date.getMonth() + 1).padStart(2, '0')
+  const dd = String(date.getDate()).padStart(2, '0')
+  return `${date.getFullYear()}-${mm}-${dd}`
+}
+
+function buildEmptyActivity5h(now: number): LocalActivityBucket[] {
+  const start = now - FIVE_HOURS_MS
+  return Array.from({ length: ACTIVITY_5H_BUCKETS }, (_, i) => ({
+    startMs: start + i * THIRTY_MINUTES_MS,
+    totalTokens: 0,
+    costUsd: 0,
+    turnCount: 0
+  }))
+}
+
+function buildEmptyDaily7d(now: number): LocalDailyBucket[] {
+  const today = new Date(now)
+  today.setHours(0, 0, 0, 0)
+  return Array.from({ length: DAILY_7D_BUCKETS }, (_, i) => {
+    const d = new Date(today)
+    d.setDate(d.getDate() - (DAILY_7D_BUCKETS - 1 - i))
+    return {
+      dayKey: formatLocalDayKey(d),
+      totalTokens: 0,
+      costUsd: 0,
+      turnCount: 0,
+      isToday: i === DAILY_7D_BUCKETS - 1
+    }
+  })
+}
+
+export function emptyLocalUsageByProvider(now?: number): Record<QuotaProviderKind, LocalUsageByProvider> {
+  const empty = (): LocalUsageByProvider => ({
+    window5h: emptyLocalQuotaUsageWindow(),
+    window7d: emptyLocalQuotaUsageWindow(),
+    activity5h: now !== undefined ? buildEmptyActivity5h(now) : [],
+    daily7d: now !== undefined ? buildEmptyDaily7d(now) : [],
+    modelMix7d: [],
+    cacheHitRate7d: null
+  })
   return {
-    codex: { window5h: emptyLocalQuotaUsageWindow(), window7d: emptyLocalQuotaUsageWindow() },
-    antigravity: {
-      window5h: emptyLocalQuotaUsageWindow(),
-      window7d: emptyLocalQuotaUsageWindow()
-    },
-    claude: { window5h: emptyLocalQuotaUsageWindow(), window7d: emptyLocalQuotaUsageWindow() }
+    codex: empty(),
+    antigravity: empty(),
+    claude: empty()
   }
 }
 
@@ -467,10 +516,25 @@ export function computeLocalRollingUsage(
   sessions: SessionTranscriptState[],
   pricing: PricingEngine,
   now = Date.now()
-): Record<QuotaProviderKind, { window5h: LocalQuotaUsageWindow; window7d: LocalQuotaUsageWindow }> {
-  const out = emptyLocalUsageByProvider()
+): Record<QuotaProviderKind, LocalUsageByProvider> {
+  const out = emptyLocalUsageByProvider(now)
   const cutoff5h = now - FIVE_HOURS_MS
   const cutoff7d = now - SEVEN_DAYS_MS
+
+  const dailyStartDate = new Date(now)
+  dailyStartDate.setHours(0, 0, 0, 0)
+  dailyStartDate.setDate(dailyStartDate.getDate() - (DAILY_7D_BUCKETS - 1))
+  const earliestMs = Math.min(cutoff7d, dailyStartDate.getTime())
+
+  const dailyBucketMaps = new Map<QuotaProviderKind, Map<string, LocalDailyBucket>>()
+  const modelTokens = new Map<QuotaProviderKind, Map<string, number>>()
+  for (const provider of QUOTA_PROVIDERS) {
+    dailyBucketMaps.set(
+      provider,
+      new Map(out[provider].daily7d.map((bucket) => [bucket.dayKey, bucket]))
+    )
+    modelTokens.set(provider, new Map())
+  }
 
   // Match aggregator deduplication so archived/multi-home copies never double-count.
   const deduped = new Map<string, SessionTranscriptState>()
@@ -491,11 +555,13 @@ export function computeLocalRollingUsage(
   for (const st of deduped.values()) {
     const provider = st.agent as QuotaProviderKind
     const target = out[provider]
+    const providerDailyMap = dailyBucketMaps.get(provider)!
+    const providerModels = modelTokens.get(provider)!
     let seen5h = false
     let seen7d = false
 
     for (const t of st.turnsByKey.values()) {
-      if (t.timestampMs < cutoff7d) continue
+      if (t.timestampMs < earliestMs) continue
 
       const turnCost = pricing.computeCostUsd(
         st.agent,
@@ -521,12 +587,33 @@ export function computeLocalRollingUsage(
         win.turnCount += 1
       }
 
-      addToWindow(target.window7d)
-      seen7d = true
+      const dailyBucket = providerDailyMap.get(formatLocalDayKey(new Date(t.timestampMs)))
+      if (dailyBucket) {
+        dailyBucket.totalTokens += t.total
+        dailyBucket.costUsd += turnCost
+        dailyBucket.turnCount += 1
+      }
+
+      if (t.timestampMs >= cutoff7d) {
+        addToWindow(target.window7d)
+        seen7d = true
+        if (t.total > 0) {
+          const model = (t.model || st.latestModel || 'unknown').trim() || 'unknown'
+          providerModels.set(model, (providerModels.get(model) || 0) + t.total)
+        }
+      }
 
       if (t.timestampMs >= cutoff5h) {
         addToWindow(target.window5h)
         seen5h = true
+        if (t.timestampMs <= now) {
+          const rawIdx = Math.floor((t.timestampMs - cutoff5h) / THIRTY_MINUTES_MS)
+          const activityIndex = Math.min(ACTIVITY_5H_BUCKETS - 1, Math.max(0, rawIdx))
+          const bucket = target.activity5h[activityIndex]
+          bucket.totalTokens += t.total
+          bucket.costUsd += turnCost
+          bucket.turnCount += 1
+        }
       }
     }
 
@@ -535,8 +622,54 @@ export function computeLocalRollingUsage(
   }
 
   for (const provider of QUOTA_PROVIDERS) {
-    out[provider].window5h.costUsd = +out[provider].window5h.costUsd.toFixed(6)
-    out[provider].window7d.costUsd = +out[provider].window7d.costUsd.toFixed(6)
+    const entry = out[provider]
+    entry.window5h.costUsd = +entry.window5h.costUsd.toFixed(6)
+    entry.window7d.costUsd = +entry.window7d.costUsd.toFixed(6)
+    for (const bucket of entry.activity5h) bucket.costUsd = +bucket.costUsd.toFixed(6)
+    for (const bucket of entry.daily7d) bucket.costUsd = +bucket.costUsd.toFixed(6)
+
+    const models = [...modelTokens.get(provider)!.entries()]
+      .filter(([, tokens]) => tokens > 0)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    const totalModelTokens = models.reduce((sum, [, tokens]) => sum + tokens, 0)
+
+    if (totalModelTokens > 0 && models.length > 0) {
+      const selected: Array<{ model: string; totalTokens: number; isOther: boolean }> = models
+        .slice(0, 3)
+        .map(([model, totalTokens]) => ({ model, totalTokens, isOther: false }))
+      if (models.length > 3) {
+        const otherTokens = models.slice(3).reduce((sum, [, tokens]) => sum + tokens, 0)
+        if (otherTokens > 0) {
+          selected.push({ model: 'other', totalTokens: otherTokens, isOther: true })
+        }
+      }
+
+      const shares = selected.map((item) => {
+        const exact = (item.totalTokens / totalModelTokens) * 100
+        const pct = Math.floor(exact)
+        return { ...item, pct, remainder: exact - pct }
+      })
+      let missing = 100 - shares.reduce((sum, item) => sum + item.pct, 0)
+      for (const item of [...shares].sort((a, b) => b.remainder - a.remainder || b.totalTokens - a.totalTokens)) {
+        if (missing <= 0) break
+        item.pct += 1
+        missing -= 1
+      }
+      entry.modelMix7d = shares.map((item) =>
+        item.isOther
+          ? { model: item.model, totalTokens: item.totalTokens, pct: item.pct, isOther: true }
+          : { model: item.model, totalTokens: item.totalTokens, pct: item.pct }
+      )
+    } else {
+      entry.modelMix7d = []
+    }
+
+    const cacheDenom =
+      entry.window7d.inputTokens + entry.window7d.cacheReadTokens + entry.window7d.cacheWriteTokens
+    entry.cacheHitRate7d =
+      cacheDenom >= 1000
+        ? Math.max(0, Math.min(100, Math.round((entry.window7d.cacheReadTokens / cacheDenom) * 100)))
+        : null
   }
 
   return out
@@ -793,7 +926,7 @@ export class QuotaEngine {
     }
     const localByProvider = pricing
       ? computeLocalRollingUsage(sessions, pricing, now)
-      : emptyLocalUsageByProvider()
+      : emptyLocalUsageByProvider(now)
 
     if (!this.officialProviders) {
       const status: QuotaProviderStatus = this.lastError ? 'error' : 'loading'

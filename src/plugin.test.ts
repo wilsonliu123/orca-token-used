@@ -2630,17 +2630,38 @@ describe('Quotas & Limits Tab UI Rendering (renderDashboardShellHtml)', () => {
     assert.ok(html.includes(getMessages('en').quotaActiveAccountBadge))
   })
 
-  test('renders Antigravity local-only state without unavailable account noise', () => {
-    const now = Date.UTC(2026, 10, 17, 12, 0, 0)
+  test('renders Antigravity local-only Option A charts, model mix, cache hit, tooltip pill, and clean accounts without reason banner', () => {
+    const now = new Date(2026, 10, 17, 14, 0, 0, 0).getTime()
+    const activity5h = Array.from({ length: 10 }, (_, i) => ({
+      startMs: now - 5 * 3600_000 + i * 30 * 60_000,
+      totalTokens: i === 9 ? 8000 : i === 2 ? 4000 : 0,
+      costUsd: i === 9 ? 0.35 : i === 2 ? 0.15 : 0,
+      turnCount: i === 9 ? 3 : i === 2 ? 1 : 0
+    }))
+    const daily7d = [
+      { dayKey: '2026-11-11', totalTokens: 2000, costUsd: 0.08, turnCount: 1, isToday: false },
+      { dayKey: '2026-11-12', totalTokens: 0, costUsd: 0, turnCount: 0, isToday: false },
+      { dayKey: '2026-11-13', totalTokens: 5000, costUsd: 0.2, turnCount: 2, isToday: false },
+      { dayKey: '2026-11-14', totalTokens: 3000, costUsd: 0.12, turnCount: 1, isToday: false },
+      { dayKey: '2026-11-15', totalTokens: 0, costUsd: 0, turnCount: 0, isToday: false },
+      { dayKey: '2026-11-16', totalTokens: 10000, costUsd: 0.4, turnCount: 4, isToday: false },
+      { dayKey: '2026-11-17', totalTokens: 12000, costUsd: 0.5, turnCount: 4, isToday: true }
+    ]
     const snap = createQuotaTestSnapshot({
       source: 'live',
       syncedAt: now,
       refreshing: false,
       lastError: null,
       providers: [
+        createProviderSnapshot('codex', {
+          status: 'ok',
+          weekly: { usedPercent: 18, windowMinutes: 10080, resetsAt: now + 86_400_000, resetDescription: null }
+        }),
         createProviderSnapshot('antigravity', {
           status: 'unavailable',
           officialQuotaAvailable: false,
+          accountEmail: 'active@example.com',
+          authKind: 'consumer',
           accounts: [
             {
               id: 'ag-1', email: 'active@example.com', label: null, authKind: 'consumer', active: true,
@@ -2652,22 +2673,179 @@ describe('Quotas & Limits Tab UI Rendering (renderDashboardShellHtml)', () => {
             }
           ],
           local: {
-            window5h: emptyLocalWindow({ totalTokens: 1200, turnCount: 2 }),
-            window7d: emptyLocalWindow({ totalTokens: 3400, turnCount: 5 })
+            window5h: emptyLocalWindow({ totalTokens: 12_000, costUsd: 0.5, turnCount: 4, rateLimitHits: 2 }),
+            window7d: emptyLocalWindow({ totalTokens: 32_000, costUsd: 1.3, turnCount: 12 }),
+            activity5h,
+            daily7d,
+            modelMix7d: [
+              { model: 'gemini-3.5-pro', totalTokens: 19_200, pct: 60 },
+              { model: 'claude-sonnet-4-6', totalTokens: 9_600, pct: 30 },
+              { model: 'other', totalTokens: 3_200, pct: 10, isOther: true }
+            ],
+            cacheHitRate7d: 74
           }
         })
       ]
     }, now)
 
-    const html = renderDashboardShellHtml({ snap, tab: 'quotas', scope: 'all', locale: 'en', collapsedGroups: { 'quotas:accounts:antigravity': false }, nowMs: now })
-    assert.ok(html.includes('Local only'))
-    assert.ok(html.includes('Orca disables Antigravity official quota reads'))
-    assert.ok(html.includes('Local 5h'))
-    assert.ok(html.includes('Local 7d'))
+    const html = renderDashboardShellHtml({
+      snap,
+      tab: 'quotas',
+      scope: 'all',
+      locale: 'en',
+      collapsedGroups: { 'quotas:accounts:antigravity': false },
+      nowMs: now
+    })
+
+    // Visual quietness: NO reason banner in local-only card
+    assert.ok(!html.includes('tp-quota-reason-banner'))
     assert.ok(!html.includes('Official quota unavailable'))
     assert.ok(!html.includes('>unavailable</div>'))
+
+    // Local-only pill with accent dot and tooltip ONLY on Antigravity, NOT on Codex
+    const pillMatches = html.match(/tp-quota-local-only-pill/g) ?? []
+    assert.equal(pillMatches.length, 1)
+    assert.ok(html.includes('Local only'))
+    assert.ok(html.includes('title="Orca disables Antigravity official quota reads to help keep your account safe."'))
+
+    // Two-column visual grid: 5H ACTIVITY (10 bars) and 7D DAILY (7 bars)
+    assert.ok(html.includes('5H ACTIVITY'))
+    assert.ok(html.includes('30m / bar'))
+    assert.ok(html.includes('12.0K tok'))
+    assert.ok(html.includes('$0.50'))
+    assert.ok(html.includes('4 turns'))
+    assert.ok(html.includes('2 × 429'))
+    assert.ok(html.includes('7D DAILY'))
+    assert.ok(html.includes('32.0K tok'))
+    assert.ok(html.includes('$1.30'))
+    assert.ok(html.includes('12 turns'))
+    assert.ok(html.includes('/ day'))
+    assert.ok(html.includes('Today'))
+
+    const chartSvgs = html.match(/<svg class="tp-quota-local-chart"[\s\S]*?<\/svg>/g) ?? []
+    assert.equal(chartSvgs.length, 2)
+    assert.equal((chartSvgs[0].match(/<rect\b/g) ?? []).length, 10)
+    assert.equal((chartSvgs[1].match(/<rect\b/g) ?? []).length, 7)
+    assert.ok(!chartSvgs[0].includes('NaN'))
+    assert.ok(!chartSvgs[1].includes('NaN'))
+
+    // 7D Model Mix stacked bar + Cache hit readout + localized "Other"
+    assert.ok(html.includes('7D MODEL MIX'))
+    assert.ok(html.includes('Cache hit 74%'))
+    assert.ok(html.includes('gemini-3.5-pro'))
+    assert.ok(html.includes('60%'))
+    assert.ok(html.includes('claude-sonnet-4-6'))
+    assert.ok(html.includes('30%'))
+    assert.ok(html.includes('Other'))
+    assert.ok(html.includes('10%'))
+
+    // Accounts list kept clean (emails + active badge, no unavailable noise)
     assert.ok(html.includes('active@example.com'))
+    assert.ok(html.includes('backup@example.com'))
     assert.ok(html.includes(getMessages('en').quotaActiveAccountBadge))
+  })
+
+  test('renders Antigravity local-only zero-usage edge case cleanly and escapes malicious model names', () => {
+    const now = new Date(2026, 10, 17, 14, 0, 0, 0).getTime()
+
+    // 1. Zero-usage local-only: flat baseline SVG charts, no model mix, no NaN, no reason banner
+    const zeroSnap = createQuotaTestSnapshot({
+      source: 'live',
+      syncedAt: now,
+      refreshing: false,
+      lastError: null,
+      providers: [
+        createProviderSnapshot('antigravity', {
+          status: 'unavailable',
+          officialQuotaAvailable: false,
+          local: {
+            window5h: emptyLocalWindow(),
+            window7d: emptyLocalWindow(),
+            activity5h: [],
+            daily7d: [],
+            modelMix7d: [],
+            cacheHitRate7d: null
+          }
+        })
+      ]
+    }, now)
+    const zeroHtml = renderDashboardShellHtml({ snap: zeroSnap, tab: 'quotas', scope: 'all', locale: 'en', nowMs: now })
+    assert.ok(zeroHtml.includes('Local only'))
+    assert.ok(!zeroHtml.includes('tp-quota-reason-banner'))
+    assert.ok(!zeroHtml.includes('tp-quota-model-mix'))
+    assert.ok(!zeroHtml.includes('7D MODEL MIX'))
+    assert.ok(!zeroHtml.includes('NaN'))
+    const zeroCharts = zeroHtml.match(/<svg class="tp-quota-local-chart"[\s\S]*?<\/svg>/g) ?? []
+    assert.equal(zeroCharts.length, 2)
+    assert.equal((zeroCharts[0].match(/<rect\b/g) ?? []).length, 10)
+    assert.equal((zeroCharts[1].match(/<rect\b/g) ?? []).length, 7)
+
+    // 2. XSS escaping on malicious model name + email
+    const xssModel = '<img src=x onerror="alert(1)">" & \'bad\''
+    const xssSnap = createQuotaTestSnapshot({
+      source: 'live',
+      syncedAt: now,
+      refreshing: false,
+      lastError: null,
+      providers: [
+        createProviderSnapshot('antigravity', {
+          status: 'unavailable',
+          officialQuotaAvailable: false,
+          accountEmail: '<script>evil()</script>@example.com',
+          local: {
+            window5h: emptyLocalWindow({ totalTokens: 1000, turnCount: 1 }),
+            window7d: emptyLocalWindow({ totalTokens: 1000, turnCount: 1 }),
+            modelMix7d: [{ model: xssModel, totalTokens: 1000, pct: 100 }],
+            cacheHitRate7d: 50
+          }
+        })
+      ]
+    }, now)
+    const xssHtml = renderDashboardShellHtml({ snap: xssSnap, tab: 'quotas', scope: 'all', locale: 'en', nowMs: now })
+    assert.ok(!xssHtml.includes('<img src=x'))
+    assert.ok(!xssHtml.includes('<script>evil()'))
+    assert.ok(xssHtml.includes('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;'))
+    assert.ok(xssHtml.includes('&lt;script&gt;evil()&lt;/script&gt;@example.com'))
+
+    // 3. Backward compatibility: when officialQuotaAvailable === true, render official gauges (NOT local-only charts/pill)
+    const officialSnap = createQuotaTestSnapshot({
+      source: 'live',
+      syncedAt: now,
+      refreshing: false,
+      lastError: null,
+      providers: [
+        createProviderSnapshot('antigravity', {
+          status: 'ok',
+          officialQuotaAvailable: true,
+          pools: [
+            {
+              id: 'gemini-models',
+              label: 'Gemini Models',
+              session: { usedPercent: 25, windowMinutes: 300, resetsAt: now + 3_600_000, resetDescription: null },
+              weekly: { usedPercent: 10, windowMinutes: 10080, resetsAt: now + 86_400_000, resetDescription: null }
+            }
+          ]
+        })
+      ]
+    }, now)
+    const officialHtml = renderDashboardShellHtml({ snap: officialSnap, tab: 'quotas', scope: 'all', locale: 'en', nowMs: now })
+    assert.equal((officialHtml.match(/<svg class="tp-quota-gauge-svg"/g) ?? []).length, 2)
+    assert.ok(!officialHtml.includes('tp-quota-local-only-pill'))
+    assert.ok(!officialHtml.includes('tp-quota-local-visual-grid'))
+    assert.ok(!officialHtml.includes('Local only'))
+
+    // 4. All 6 locales expose non-empty localized Option A strings
+    for (const loc of ['zh-TW', 'zh-CN', 'en', 'ja', 'ko', 'cs'] as const) {
+      const m = getMessages(loc)
+      assert.ok(m.quotaActivity5hLabel.length > 0)
+      assert.ok(m.quotaDaily7dLabel.length > 0)
+      assert.ok(m.quotaModelMix7dLabel.length > 0)
+      assert.ok(m.quotaCacheHitRate(82).includes('82'))
+      assert.ok(m.quotaBarInterval.length > 0)
+      assert.ok(m.quotaTodayLabel.length > 0)
+      assert.ok(m.quotaDailyAvg('4.6K').includes('4.6K'))
+      assert.ok(m.quotaModelOtherLabel.length > 0)
+    }
   })
 
   test('renders Claude unavailable and error states with reason banner and local rolling 5h & 7d token/cost tiles', () => {
