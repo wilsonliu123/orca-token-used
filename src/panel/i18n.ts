@@ -75,6 +75,14 @@ export interface UiMessages {
   quotaUnavailableLabel: string
   quotaLocalOnlyLabel: string
   quotaLocalOnlyHint: string
+  quotaActivity5hLabel: string
+  quotaDaily7dLabel: string
+  quotaModelMix7dLabel: string
+  quotaCacheHitRate: (pct: number) => string
+  quotaBarInterval: string
+  quotaTodayLabel: string
+  quotaDailyAvg: (tokens: string) => string
+  quotaModelOtherLabel: string
   quotaErrorLabel: string
   quotaLoadingLabel: string
   quotaSourceOff: string
@@ -191,6 +199,14 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     quotaUnavailableLabel: '官方方案額度不可用',
     quotaLocalOnlyLabel: '僅本機',
     quotaLocalOnlyHint: 'Orca 已停用 Antigravity 官方額度讀取，以保護帳號安全。',
+    quotaActivity5hLabel: '5 小時活動',
+    quotaDaily7dLabel: '7 日每日',
+    quotaModelMix7dLabel: '7 日模型比例',
+    quotaCacheHitRate: (pct) => `快取命中 ${pct}%`,
+    quotaBarInterval: '每 30 分鐘',
+    quotaTodayLabel: '今天',
+    quotaDailyAvg: (tokens) => `${tokens} / 日`,
+    quotaModelOtherLabel: '其他',
     quotaErrorLabel: '額度讀取失敗',
     quotaLoadingLabel: '正在取得即時額度…',
     quotaSourceOff: '額度追蹤已關閉',
@@ -315,6 +331,14 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     quotaUnavailableLabel: '官方方案额度不可用',
     quotaLocalOnlyLabel: '仅本机',
     quotaLocalOnlyHint: 'Orca 已停用 Antigravity 官方额度读取，以保护账号安全。',
+    quotaActivity5hLabel: '5 小时活动',
+    quotaDaily7dLabel: '7 日每日',
+    quotaModelMix7dLabel: '7 日模型占比',
+    quotaCacheHitRate: (pct) => `缓存命中 ${pct}%`,
+    quotaBarInterval: '每 30 分钟',
+    quotaTodayLabel: '今天',
+    quotaDailyAvg: (tokens) => `${tokens} / 天`,
+    quotaModelOtherLabel: '其他',
     quotaErrorLabel: '额度读取失败',
     quotaLoadingLabel: '正在获取实时额度…',
     quotaSourceOff: '额度跟踪已关闭',
@@ -439,6 +463,14 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     quotaUnavailableLabel: 'Official quota unavailable',
     quotaLocalOnlyLabel: 'Local only',
     quotaLocalOnlyHint: 'Orca disables Antigravity official quota reads to help keep your account safe.',
+    quotaActivity5hLabel: '5H ACTIVITY',
+    quotaDaily7dLabel: '7D DAILY',
+    quotaModelMix7dLabel: '7D MODEL MIX',
+    quotaCacheHitRate: (pct) => `Cache hit ${pct}%`,
+    quotaBarInterval: '30m / bar',
+    quotaTodayLabel: 'Today',
+    quotaDailyAvg: (tokens) => `${tokens} / day`,
+    quotaModelOtherLabel: 'Other',
     quotaErrorLabel: 'Quota check failed',
     quotaLoadingLabel: 'Checking provider quotas…',
     quotaSourceOff: 'Quota tracking is off',
@@ -563,6 +595,14 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     quotaUnavailableLabel: '公式クォータ利用不可',
     quotaLocalOnlyLabel: 'ローカルのみ',
     quotaLocalOnlyHint: 'アカウント保護のため、Orca は Antigravity の公式クォータ取得を無効にしています。',
+    quotaActivity5hLabel: '5時間アクティビティ',
+    quotaDaily7dLabel: '7日デイリー',
+    quotaModelMix7dLabel: '7日モデル比率',
+    quotaCacheHitRate: (pct) => `キャッシュ ${pct}%`,
+    quotaBarInterval: '30分 / バー',
+    quotaTodayLabel: '今日',
+    quotaDailyAvg: (tokens) => `${tokens} / 日`,
+    quotaModelOtherLabel: 'その他',
     quotaErrorLabel: 'クォータ取得エラー',
     quotaLoadingLabel: 'クォータを取得中…',
     quotaSourceOff: 'クォータの追跡はオフです',
@@ -687,6 +727,14 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     quotaUnavailableLabel: '공식 할당량 사용 불가',
     quotaLocalOnlyLabel: '로컬만',
     quotaLocalOnlyHint: '계정 보호를 위해 Orca가 Antigravity 공식 할당량 조회를 비활성화했습니다.',
+    quotaActivity5hLabel: '5시간 활동',
+    quotaDaily7dLabel: '7일 일별',
+    quotaModelMix7dLabel: '7일 모델 비율',
+    quotaCacheHitRate: (pct) => `캐시 적중 ${pct}%`,
+    quotaBarInterval: '30분 / 막대',
+    quotaTodayLabel: '오늘',
+    quotaDailyAvg: (tokens) => `${tokens} / 일`,
+    quotaModelOtherLabel: '기타',
     quotaErrorLabel: '할당량 조회 오류',
     quotaLoadingLabel: '할당량 확인 중…',
     quotaSourceOff: '할당량 추적이 꺼져 있습니다',
@@ -811,6 +859,14 @@ const MESSAGES: Record<SupportedLocale, UiMessages> = {
     quotaUnavailableLabel: 'Oficiální kvóta není dostupná',
     quotaLocalOnlyLabel: 'Pouze lokálně',
     quotaLocalOnlyHint: 'Orca vypíná načítání oficiální kvóty Antigravity kvůli ochraně účtu.',
+    quotaActivity5hLabel: 'AKTIVITA 5H',
+    quotaDaily7dLabel: 'DENNĚ 7D',
+    quotaModelMix7dLabel: 'MODELY 7D',
+    quotaCacheHitRate: (pct) => `Cache hit ${pct}%`,
+    quotaBarInterval: '30 min / sloupec',
+    quotaTodayLabel: 'Dnes',
+    quotaDailyAvg: (tokens) => `${tokens} / den`,
+    quotaModelOtherLabel: 'Ostatní',
     quotaErrorLabel: 'Kontrola kvóty selhala',
     quotaLoadingLabel: 'Zjišťuji kvóty poskytovatelů…',
     quotaSourceOff: 'Sledování kvót je vypnuto',

@@ -422,6 +422,224 @@ describe('Quotas payload parser, local rolling usage, and QuotaEngine', () => {
     assert.equal(local.codex.window5h.sessionCount, 1)
   })
 
+  test('computes activity5h (10x30m including now boundary), daily7d (7 local days), modelMix7d (top-3 + other summing to 100%), and cacheHitRate7d', () => {
+    // Anchor at 14:15 local time so all 5h buckets stay cleanly on the same local day
+    const anchorDate = new Date(2026, 10, 17, 14, 15, 0, 0)
+    const now = anchorDate.getTime()
+    const pricing = new PricingEngine()
+
+    const sAg = createEmptySessionState('ag-charts', 'antigravity', '/tmp/ag-charts.jsonl')
+    // Bucket 0: [now - 5h, now - 4.5h) -> exactly at now - 5h
+    sAg.turnsByKey.set('t-b0', {
+      turnKey: 't-b0',
+      timestampMs: now - 5 * 3600_000,
+      input: 1000,
+      output: 200,
+      reasoning: 0,
+      cacheRead: 3000,
+      cacheWrite: 0,
+      total: 4200,
+      durationSec: 2,
+      tps: 100,
+      model: 'gemini-3.5-pro',
+      explicitCostUsd: 0.42
+    })
+    // Bucket 9: [now - 30m, now] -> exact `now` boundary MUST land in bucket 9 (not dropped!)
+    sAg.turnsByKey.set('t-b9-now', {
+      turnKey: 't-b9-now',
+      timestampMs: now,
+      input: 500,
+      output: 300,
+      reasoning: 0,
+      cacheRead: 1500,
+      cacheWrite: 0,
+      total: 2300,
+      durationSec: 1,
+      tps: 300,
+      model: 'claude-sonnet-4-6',
+      explicitCostUsd: 0.23
+    })
+    // 2 days ago (local calendar day index 4): 3rd model
+    const twoDaysAgo = new Date(2026, 10, 15, 10, 0, 0, 0).getTime()
+    sAg.turnsByKey.set('t-d2', {
+      turnKey: 't-d2',
+      timestampMs: twoDaysAgo,
+      input: 1000,
+      output: 500,
+      reasoning: 0,
+      cacheRead: 2500,
+      cacheWrite: 500,
+      total: 4500,
+      durationSec: 3,
+      tps: 166,
+      model: 'gemini-3.5-flash',
+      explicitCostUsd: 0.15
+    })
+    // 6 days ago (oldest local calendar day index 0): 4th and 5th models -> aggregated into "other"
+    const sixDaysAgo = new Date(2026, 10, 11, 16, 0, 0, 0).getTime()
+    sAg.turnsByKey.set('t-d6-a', {
+      turnKey: 't-d6-a',
+      timestampMs: sixDaysAgo,
+      input: 400,
+      output: 200,
+      reasoning: 0,
+      cacheRead: 400,
+      cacheWrite: 0,
+      total: 1000,
+      durationSec: 1,
+      tps: 200,
+      model: 'gpt-5.4-mini',
+      explicitCostUsd: 0.05
+    })
+    sAg.turnsByKey.set('t-d6-b', {
+      turnKey: 't-d6-b',
+      timestampMs: sixDaysAgo + 60_000,
+      input: 200,
+      output: 100,
+      reasoning: 0,
+      cacheRead: 200,
+      cacheWrite: 0,
+      total: 500,
+      durationSec: 1,
+      tps: 100,
+      model: 'gemini-2.5-flash-lite',
+      explicitCostUsd: 0.02
+    })
+    // 8 days ago: outside both daily7d and window7d
+    const eightDaysAgo = new Date(2026, 10, 9, 12, 0, 0, 0).getTime()
+    sAg.turnsByKey.set('t-old', {
+      turnKey: 't-old',
+      timestampMs: eightDaysAgo,
+      input: 9000,
+      output: 1000,
+      reasoning: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      total: 10000,
+      durationSec: 2,
+      tps: 500,
+      model: 'legacy-model',
+      explicitCostUsd: 1.0
+    })
+
+    const local = computeLocalRollingUsage([sAg], pricing, now)
+    const ag = local.antigravity
+
+    // 1. activity5h: 10 x 30m buckets oldest -> newest
+    assert.equal(ag.activity5h.length, 10)
+    assert.equal(ag.activity5h[0].startMs, now - 5 * 3600_000)
+    assert.equal(ag.activity5h[9].startMs, now - 30 * 60_000)
+    assert.equal(ag.activity5h[0].totalTokens, 4200)
+    assert.equal(ag.activity5h[0].costUsd, 0.42)
+    assert.equal(ag.activity5h[0].turnCount, 1)
+    assert.equal(ag.activity5h[9].totalTokens, 2300)
+    assert.equal(ag.activity5h[9].costUsd, 0.23)
+    assert.equal(ag.activity5h[9].turnCount, 1)
+    assert.equal(
+      ag.activity5h.reduce((sum, b) => sum + b.totalTokens, 0),
+      ag.window5h.totalTokens
+    )
+
+    // 2. daily7d: 7 local calendar days oldest -> today
+    assert.equal(ag.daily7d.length, 7)
+    assert.equal(ag.daily7d[0].dayKey, '2026-11-11')
+    assert.equal(ag.daily7d[0].isToday, false)
+    assert.equal(ag.daily7d[0].totalTokens, 1500)
+    assert.equal(ag.daily7d[0].turnCount, 2)
+    assert.equal(ag.daily7d[0].costUsd, 0.07)
+    assert.equal(ag.daily7d[4].dayKey, '2026-11-15')
+    assert.equal(ag.daily7d[4].totalTokens, 4500)
+    assert.equal(ag.daily7d[6].dayKey, '2026-11-17')
+    assert.equal(ag.daily7d[6].isToday, true)
+    assert.equal(ag.daily7d[6].totalTokens, 6500)
+    assert.equal(ag.daily7d[6].turnCount, 2)
+    assert.equal(ag.daily7d[6].costUsd, 0.65)
+
+    // 3. modelMix7d: top 3 + aggregated "other" summing cleanly to 100%
+    // Totals: gemini-3.5-flash=4500, gemini-3.5-pro=4200, claude-sonnet-4-6=2300, other=1500 (total=12500)
+    assert.equal(ag.modelMix7d.length, 4)
+    assert.deepEqual(
+      ag.modelMix7d.map((m) => [m.model, m.totalTokens, Boolean(m.isOther)]),
+      [
+        ['gemini-3.5-flash', 4500, false],
+        ['gemini-3.5-pro', 4200, false],
+        ['claude-sonnet-4-6', 2300, false],
+        ['other', 1500, true]
+      ]
+    )
+    assert.equal(
+      ag.modelMix7d.reduce((sum, m) => sum + m.pct, 0),
+      100
+    )
+    for (const entry of ag.modelMix7d) {
+      assert.ok(Number.isInteger(entry.pct) && entry.pct >= 0)
+    }
+
+    // 4. cacheHitRate7d: exact same formula as Stats view (cacheRead / (input + cacheRead + cacheWrite))
+    // input=3100, cacheRead=7600, cacheWrite=500 -> denom=11200 -> round(7600/11200*100) = 68
+    assert.equal(ag.cacheHitRate7d, 68)
+  })
+
+  test('handles zero-token edge cases and exact 3-way tie for modelMix7d and cacheHitRate7d', () => {
+    const now = new Date(2026, 10, 17, 12, 0, 0, 0).getTime()
+    const pricing = new PricingEngine()
+
+    // Zero-token turn must produce modelMix7d=[] and cacheHitRate7d=null
+    const sZero = createEmptySessionState('ag-zero', 'antigravity', '/tmp/ag-zero.jsonl')
+    sZero.turnsByKey.set('t0', {
+      turnKey: 't0',
+      timestampMs: now - 10_000,
+      input: 0,
+      output: 0,
+      reasoning: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      total: 0,
+      durationSec: 1,
+      tps: 0,
+      model: 'gemini-3.5-pro',
+      explicitCostUsd: 0
+    })
+
+    // Three equal models + one literally named "other" (when <=3 models, isOther must NOT be set)
+    const sTie = createEmptySessionState('codex-tie', 'codex', '/tmp/codex-tie.jsonl')
+    for (const model of ['model-a', 'model-b', 'other']) {
+      sTie.turnsByKey.set(model, {
+        turnKey: model,
+        timestampMs: now - 5_000,
+        input: 100,
+        output: 200,
+        reasoning: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        total: 300,
+        durationSec: 1,
+        tps: 200,
+        model,
+        explicitCostUsd: 0.01
+      })
+    }
+
+    const local = computeLocalRollingUsage([sZero, sTie], pricing, now)
+    assert.equal(local.antigravity.activity5h.length, 10)
+    assert.equal(local.antigravity.daily7d.length, 7)
+    assert.deepEqual(local.antigravity.modelMix7d, [])
+    assert.equal(local.antigravity.cacheHitRate7d, null)
+
+    // Codex has 3 equal models (300 each = 900 total): pct sums to 100 (34+33+33), none marked isOther
+    assert.equal(local.codex.modelMix7d.length, 3)
+    assert.equal(local.codex.modelMix7d.reduce((s, m) => s + m.pct, 0), 100)
+    assert.equal(local.codex.modelMix7d.some((m) => m.isOther === true), false)
+    // input=300 < 1000 threshold -> cacheHitRate7d=null
+    assert.equal(local.codex.cacheHitRate7d, null)
+
+    // Claude with zero sessions -> empty buckets, empty mix, null cache hit
+    assert.equal(local.claude.activity5h.length, 10)
+    assert.equal(local.claude.daily7d.length, 7)
+    assert.deepEqual(local.claude.modelMix7d, [])
+    assert.equal(local.claude.cacheHitRate7d, null)
+  })
+
   test('QuotaEngine deduplicates in-flight refreshes, respects 5m TTL, falls back to cache on error, and aborts cleanly', async () => {
     let calls = 0
     let failNext = false
