@@ -2,6 +2,12 @@
 
 All notable changes to Token Pulse are documented in this file.
 
+## [0.2.6] - 2026-11-28
+
+### Changed
+
+- **Antigravity local-only Quotas card graphical redesign**: Redesigned the Antigravity local-only Quotas card with 5h/7d sparkbars, 7d model mix breakdown, and cache hit rate charts computed from local transcripts, localized across all 6 locales (`zh-TW`, `zh-CN`, `en`, `ja`, `ko`, `cs`) (#14).
+
 ## [0.2.5] - 2026-11-28
 
 ### Fixed
